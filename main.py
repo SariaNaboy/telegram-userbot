@@ -7,7 +7,7 @@ API_ID   = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION  = os.getenv("SESSION_STRING")
 
-TARGET_CHATS = {-1002866597350, -1003984885147}
+TARGET_CHATS = {-1002866597350, -1003984885147, -1001596320253}
 TRIGGER_WORDS = {"گزارش", "report", "@admin", "صیک", "سیک", "اخطار", "بن", "سکوت", "ban", "mute"}
 
 app = Client(
