@@ -30,6 +30,13 @@ COMMENT_GROUPS = {
     -1001596320253,
 }
 
+# Source channels whose post updates may arrive even when Telegram doesn't send
+# the automatic-forward update from the linked discussion group. The first ID
+# is taken from the inspected root in -1001596320253.
+DISCUSSION_SOURCE_CHANNELS = {
+    -1001279727614,
+}
+
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
@@ -220,6 +227,47 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
         thread_watchers.pop(root_key, None)
 
 
+async def observe_channel_post_discussion(source_chat_id: int, source_message_id: int):
+    """Map a source-channel post to its linked discussion-group root.
+
+    Telegram documents get_discussion_message() specifically for this mapping;
+    it avoids assuming that the source channel message ID equals the linked
+    group's automatically-forwarded message ID.
+    """
+    try:
+        discussion_root = await app.get_discussion_message(
+            source_chat_id,
+            source_message_id,
+        )
+        discussion_chat_id = discussion_root.chat.id
+        if discussion_chat_id not in COMMENT_GROUPS:
+            print(
+                f"[DISCUSSION MAP IGNORED] source={source_chat_id}/{source_message_id} "
+                f"discussion_chat={discussion_chat_id}",
+                flush=True,
+            )
+            return
+
+        print(
+            f"[DISCUSSION MAP] source={source_chat_id}/{source_message_id} "
+            f"root={discussion_chat_id}/{discussion_root.id}",
+            flush=True,
+        )
+        await observe_discussion_root(
+            discussion_chat_id,
+            discussion_root.id,
+            source_channel_id=source_chat_id,
+            known_count=None,
+            source="channel-post-map",
+        )
+    except Exception as exc:
+        print(
+            f"[DISCUSSION MAP ERROR] source={source_chat_id}/{source_message_id}: {exc!r}",
+            flush=True,
+        )
+        print(traceback.format_exc(), flush=True)
+
+
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
     """Common root entry point used by high-level and raw handlers."""
     root_key = (chat_id, root_message_id)
@@ -291,6 +339,13 @@ async def on_raw_update(client, update, users, chats):
     is_outgoing = bool(getattr(message, "out", False))
 
     try:
+        # A source-channel post and its auto-forward in the linked discussion
+        # group have different message IDs. Map it with Telegram's documented
+        # getDiscussionMessage method instead of guessing an ID relationship.
+        if chat_id in DISCUSSION_SOURCE_CHANNELS and getattr(message, "post", False):
+            await observe_channel_post_discussion(chat_id, message_id)
+            return
+
         # Raw fallback: useful if a high-level update is delivered out of order.
         if chat_id in COMMENT_GROUPS:
             fwd_from = getattr(getattr(message, "fwd_from", None), "from_id", None)
