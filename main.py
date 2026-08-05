@@ -273,11 +273,10 @@ async def on_raw_update(client, update, users, chats):
     if not any(word.casefold() in text for word in TRIGGER_WORDS):
         return
 
-    # This fallback also supports your messages from before process startup.
-    if not await target_is_mine(chat_id, replied_id):
-        print(f"[TRIGGER IGNORED: TARGET NOT MINE] {chat_id}/{replied_id}")
-        return
-
+    # Intentionally no author check here. In non-comment messages Telegram may
+    # expose an anonymous/channel sender rather than the user account, which
+    # made the old "is mine" gate reject the target. In these configured groups,
+    # every reply containing a trigger deletes the message it replies to.
     print(f"[DELETE TRIGGER] {chat_id}/{replied_id} by reply={message_id}")
     await delete_now(chat_id, replied_id)
 
