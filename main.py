@@ -59,6 +59,8 @@ my_messages = defaultdict(set)
 waiting_roots = {}
 # هر root فقط یک بار برای کامنت تلاش می‌شود.
 comment_attempted = set()
+# Roots recovered from an out-of-order reply update; prevents repeated lookups.
+recovery_checked = set()
 
 
 def chat_id_from_channel_id(channel_id: int) -> int:
@@ -169,6 +171,26 @@ async def delete_now(chat_id: int, message_id: int):
         print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}")
 
 
+async def recover_root_from_reply(chat_id: int, root_message_id: int):
+    """Fallback for busy groups when a reply update is processed before its root update."""
+    root_key = (chat_id, root_message_id)
+    if root_key in comment_attempted or root_key in recovery_checked:
+        return
+
+    recovery_checked.add(root_key)
+    try:
+        root = await app.get_messages(chat_id, root_message_id)
+        # An automatic discussion post is represented as a forward from a channel.
+        if not root or not getattr(root, "forward_from_chat", None):
+            return
+
+        comment_attempted.add(root_key)
+        print(f"[RECOVERED DISCUSSION ROOT] {root_key}")
+        await send_comment_after_external_reply(chat_id, root_message_id)
+    except Exception as exc:
+        print(f"[ROOT RECOVERY ERROR] {root_key}: {exc!r}")
+
+
 async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """
     This runs only after an incoming reply to the root was received. That update
@@ -264,6 +286,11 @@ async def on_raw_update(client, update, users, chats):
 
                 # The external update is already proof that a comment exists on Telegram.
                 await send_comment_after_external_reply(chat_id, root_key[1])
+
+            elif top_id or reply_id:
+                # Busy groups can deliver/process a reply before the root forward has
+                # entered waiting_roots. Recover the root once instead of missing it.
+                await recover_root_from_reply(chat_id, top_id or reply_id)
 
     # ----- Delete logic -----
     if chat_id not in DELETE_GROUPS:
