@@ -18,6 +18,9 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION = os.environ["SESSION_STRING"]
 
+# پشتیبانی از نام فعلی secret در workflow و نام استاندارد env.
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
+
 DELETE_GROUPS = {
     -1002866597350,
     -1003984885147,
@@ -60,6 +63,18 @@ comment_attempted = set()
 
 def chat_id_from_channel_id(channel_id: int) -> int:
     return -(1_000_000_000_000 + channel_id)
+
+
+async def notify_admin(text: str):
+    if not ADMIN_USERNAME:
+        print("[ADMIN NOTIFY SKIPPED] ADMIN_USERNAME is not configured")
+        return
+
+    try:
+        await app.send_message(ADMIN_USERNAME, text)
+        print("[ADMIN NOTIFIED]")
+    except Exception as exc:
+        print(f"[ADMIN NOTIFY ERROR] {exc!r}")
 
 
 async def get_channel_peers(chat_id: int):
@@ -178,6 +193,16 @@ async def verify_then_comment(chat_id: int, root_message_id: int):
             )
         )
         print(f"[COMMENT SENT] {chat_id}/{root_message_id}")
+
+        # Notification is intentionally scheduled after the comment RPC succeeds,
+        # so it never delays the attempt to become an early comment.
+        internal_chat_id = str(chat_id)[4:] if str(chat_id).startswith("-100") else str(abs(chat_id))
+        asyncio.create_task(
+            notify_admin(
+                "کامنت ثبت شد:\n"
+                f"https://t.me/c/{internal_chat_id}/{root_message_id}"
+            )
+        )
 
     except FloodWait as exc:
         # Do NOT retry comments: a delayed retry is no longer a fast comment.
