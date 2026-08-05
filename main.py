@@ -1,9 +1,34 @@
+# -*- coding: utf-8 -*-
+"""
+نسخهٔ اصلاح‌شده‌ی یوزربات — تفاوت اصلی با نسخهٔ قبلی:
+
+1) پولینگ فعال (مهم‌ترین اصلاح):
+   تلگرام تضمین نمی‌کند آپدیت پوشِ پست‌های چنل را بفرستد (فقط "usually" می‌فرستد و
+   ممکن است بی‌صدا قطع شود). برای همین کد قبلی هیچ لاگی نمی‌داد.
+   این نسخه علاوه بر هندلرهای پوش، هر SOURCE_POLL_INTERVAL ثانیه چنل رادیو و
+   گروه‌های دیسکاشن را خودش می‌پرسد و پست‌های جدید را پیدا می‌کند.
+
+2) DEBUG_UPDATES=true -> همهٔ آپدیت‌های خام و همهٔ پیام‌ها لاگ می‌شوند.
+
+3) تنظیمات از طریق env:
+   SOURCE_POLL_INTERVAL   (پیش‌فرض 2.0)  فاصلهٔ پولینگ
+   COMMENT_IF_NO_REPLIES  (پیش‌فرض false) اگر تا تایم‌اوت کامنتی نیامد باز هم کامنت بفرست
+   ENABLE_STARTUP_RECOVERY (پیش‌فرض true) در استارت روی جدیدترین پستِ دارای کامنت کامنت بفرست
+   DEBUG_UPDATES          (پیش‌فرض false)
+"""
 import os
 import time
 import asyncio
 import secrets
 import traceback
+import logging
 from collections import defaultdict
+
+# لاگ داخلی pyrogram (مثل UpdateChannelTooLong) هم دیده شود:
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s %(name)s: %(message)s",
+)
 
 from pyrogram import Client, filters, idle, raw
 from pyrogram.errors import FloodWait
@@ -31,8 +56,7 @@ COMMENT_GROUPS = {
 }
 
 # Source channels whose post updates may arrive even when Telegram doesn't send
-# the automatic-forward update from the linked discussion group. The first ID
-# is taken from the inspected root in -1001596320253.
+# the automatic-forward update from the linked discussion group.
 DISCUSSION_SOURCE_CHANNELS = {
     -1001279727614,
 }
@@ -41,9 +65,15 @@ TRIGGER_WORDS = {
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
 COMMENT_TEXT = "🤔🤔🤔🤔"
-WAIT_FOR_FIRST_COMMENT = 120
+WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "120"))
 OWN_MESSAGE_HISTORY_LIMIT = 1000
 COMMENT_RECOVERY_HISTORY_LIMIT = 1500
+
+# ---- تنظیمات جدید ----
+SOURCE_POLL_INTERVAL = float(os.getenv("SOURCE_POLL_INTERVAL", "2.0"))
+COMMENT_IF_NO_REPLIES = os.getenv("COMMENT_IF_NO_REPLIES", "false").lower() in {"1", "true", "yes"}
+ENABLE_STARTUP_RECOVERY = os.getenv("ENABLE_STARTUP_RECOVERY", "true").lower() in {"1", "true", "yes"}
+DEBUG_UPDATES = os.getenv("DEBUG_UPDATES", "false").lower() in {"1", "true", "yes"}
 
 app = Client(
     "userbot",
@@ -63,6 +93,10 @@ comment_attempted = set()
 thread_watchers = {}
 recovery_checked = set()
 logged_reply_roots = set()
+
+# خط مبنای پولینگ: بالاترین message id که قبلاً دیده‌ایم
+last_seen_channel_post = {}   # chat_id -> highest post id
+last_seen_group_message = {}  # chat_id -> highest group message id
 
 
 def chat_id_from_channel_id(channel_id: int) -> int:
@@ -205,6 +239,14 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
     last_count = None
 
     try:
+        if not hasattr(app, "get_discussion_replies_count"):
+            print(
+                "[ERROR] Pyrogram >= 2.0 needed for get_discussion_replies_count "
+                "— run: pip install -U pyrogram",
+                flush=True,
+            )
+            return
+
         while time.monotonic() < deadline:
             if root_key in comment_attempted:
                 return
@@ -222,18 +264,25 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
 
         waiting_roots.pop(root_key, None)
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
+
+        # اگر هیچ کامنتی نیامد ولی کاربر خواسته باز هم کامنت فرستاده شود:
+        if COMMENT_IF_NO_REPLIES and root_key not in comment_attempted:
+            await reserve_and_send_comment(chat_id, root_message_id, "timeout-force")
     finally:
         thread_watchers.pop(root_key, None)
 
 
 async def observe_channel_post_discussion(source_chat_id: int, source_message_id: int):
-    """Map a source-channel post to its linked discussion-group root.
-
-    Telegram documents get_discussion_message() specifically for this mapping;
-    it avoids assuming that the source channel message ID equals the linked
-    group's automatically-forwarded message ID.
-    """
+    """Map a source-channel post to its linked discussion-group root."""
     try:
+        if not hasattr(app, "get_discussion_message"):
+            print(
+                "[ERROR] Pyrogram >= 2.0 needed for get_discussion_message "
+                "— run: pip install -U pyrogram",
+                flush=True,
+            )
+            return
+
         discussion_root = await app.get_discussion_message(
             source_chat_id,
             source_message_id,
@@ -268,7 +317,7 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
 
 
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
-    """Common root entry point used by high-level and raw handlers."""
+    """Common root entry point used by high-level, raw and polling handlers."""
     root_key = (chat_id, root_message_id)
     if root_key in comment_attempted or root_key in thread_watchers:
         return
@@ -301,9 +350,6 @@ async def detect_source_channel_post_high_level(client, message):
         print(traceback.format_exc(), flush=True)
 
 
-# This is the main fix. The supplied high-level Message already contains
-# forward_from_chat and replies, whereas raw update delivery can be missed when
-# an ephemeral runner starts late.
 @app.on_message(filters.chat(list(COMMENT_GROUPS)) & ~filters.outgoing)
 async def detect_discussion_root_high_level(client, message):
     try:
@@ -331,8 +377,33 @@ async def remember_outgoing_message(client, message):
     print(f"[MY MESSAGE HIGH LEVEL] {message.chat.id}/{message.id}", flush=True)
 
 
+# فقط برای دیباگ: همهٔ پیام‌ها را نشان می‌دهد (با DEBUG_UPDATES=true)
+if DEBUG_UPDATES:
+    @app.on_message()
+    async def debug_any_message(client, message):
+        print(
+            f"[DEBUG MSG] chat={message.chat.id} id={message.id} out={message.outgoing} "
+            f"text={(message.text or '')[:60]!r}",
+            flush=True,
+        )
+
+
 @app.on_raw_update()
 async def on_raw_update(client, update, users, chats):
+    if DEBUG_UPDATES:
+        print(f"[RAW UPDATE] {type(update).__name__}", flush=True)
+
+    if isinstance(update, raw.types.UpdateChannelTooLong):
+        # چنل بزرگ/پرمشترک: تلگرام به‌جای پوش هر پست، این را می‌فرستد.
+        # خود pyrogram فقط در سطح INFO لاگ می‌زند؛ ما اینجا واضح هشدار می‌دهیم.
+        # پولینگ poll_new_channel_posts این مورد را جبران می‌کند.
+        print(
+            f"[CHANNEL TOO LONG] channel={getattr(update, 'channel_id', None)} "
+            f"pts={getattr(update, 'pts', None)} -> پوش نمی‌رسد، پولینگ فعال است",
+            flush=True,
+        )
+        return
+
     if not isinstance(update, UpdateNewChannelMessage):
         return
 
@@ -436,6 +507,58 @@ async def on_raw_update(client, update, users, chats):
         print(traceback.format_exc(), flush=True)
 
 
+# ================= پولینگ فعال =================
+
+async def poll_new_channel_posts():
+    """هر SOURCE_POLL_INTERVAL ثانیه چنل رادیو را می‌پرسد و پست‌های جدید را پیدا می‌کند."""
+    while True:
+        try:
+            for chat_id in DISCUSSION_SOURCE_CHANNELS:
+                last = last_seen_channel_post.get(chat_id, 0)
+                try:
+                    async for item in app.get_chat_history(chat_id, limit=5):
+                        if item.id <= last:
+                            break
+                        print(f"[POLL NEW POST] {chat_id}/{item.id}", flush=True)
+                        last_seen_channel_post[chat_id] = max(
+                            last_seen_channel_post.get(chat_id, 0), item.id
+                        )
+                        await observe_channel_post_discussion(chat_id, item.id)
+                except Exception as exc:
+                    print(f"[POLL CHANNEL ERROR] {chat_id}: {exc!r}", flush=True)
+        except Exception as exc:
+            print(f"[POLL LOOP ERROR] {exc!r}", flush=True)
+        await asyncio.sleep(SOURCE_POLL_INTERVAL)
+
+
+async def poll_new_discussion_roots():
+    """گروه‌های دیسکاشن را می‌پرسد؛ ریشهٔ auto-forward جدید (پست چنل) را پیدا می‌کند."""
+    while True:
+        try:
+            for chat_id in COMMENT_GROUPS:
+                last = last_seen_group_message.get(chat_id, 0)
+                try:
+                    async for item in app.get_chat_history(chat_id, limit=10):
+                        if item.id <= last:
+                            break
+                        last_seen_group_message[chat_id] = max(
+                            last_seen_group_message.get(chat_id, 0), item.id
+                        )
+                        fwd = getattr(item, "forward_from_chat", None)
+                        if fwd is not None and getattr(fwd, "id", None) in DISCUSSION_SOURCE_CHANNELS:
+                            print(f"[POLL GROUP ROOT] {chat_id}/{item.id} fwd={fwd.id}", flush=True)
+                            replies_obj = getattr(item, "replies", None)
+                            reply_count = getattr(replies_obj, "replies", None) if replies_obj else None
+                            await observe_discussion_root(
+                                chat_id, item.id, fwd.id, reply_count, "group-poll"
+                            )
+                except Exception as exc:
+                    print(f"[POLL GROUP ERROR] {chat_id}: {exc!r}", flush=True)
+        except Exception as exc:
+            print(f"[POLL LOOP ERROR] {exc!r}", flush=True)
+        await asyncio.sleep(SOURCE_POLL_INTERVAL)
+
+
 async def find_recent_active_discussion_root(chat_id: int):
     """Find the newest forwarded discussion root that already has a reply."""
     peer, _ = await get_channel_peers(chat_id)
@@ -505,8 +628,32 @@ async def main():
             except Exception as exc:
                 print(f"[PREWARM ERROR] {chat_id}: {exc!r}", flush=True)
 
+        # ---- ثبت خط مبنای پولینگ (تا پست‌های قدیمی دوباره پردازش نشوند) ----
+        for chat_id in DISCUSSION_SOURCE_CHANNELS:
+            try:
+                async for item in app.get_chat_history(chat_id, limit=1):
+                    last_seen_channel_post[chat_id] = item.id
+                    print(f"[CHANNEL BASELINE] {chat_id} top_id={item.id}", flush=True)
+                    break
+            except Exception as exc:
+                print(f"[CHANNEL BASELINE ERROR] {chat_id}: {exc!r}", flush=True)
+
         for chat_id in COMMENT_GROUPS:
-            await recover_recent_discussion_root(chat_id)
+            try:
+                async for item in app.get_chat_history(chat_id, limit=1):
+                    last_seen_group_message[chat_id] = item.id
+                    print(f"[GROUP BASELINE] {chat_id} top_id={item.id}", flush=True)
+                    break
+            except Exception as exc:
+                print(f"[GROUP BASELINE ERROR] {chat_id}: {exc!r}", flush=True)
+
+        # ---- شروع پولینگ فعال ----
+        asyncio.create_task(poll_new_channel_posts())
+        asyncio.create_task(poll_new_discussion_roots())
+
+        if ENABLE_STARTUP_RECOVERY:
+            for chat_id in COMMENT_GROUPS:
+                await recover_recent_discussion_root(chat_id)
 
         for chat_id in DELETE_GROUPS:
             await index_recent_own_messages(chat_id)
