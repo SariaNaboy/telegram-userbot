@@ -176,6 +176,53 @@ async def delete_now(chat_id: int, message_id: int):
         print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}")
 
 
+async def poll_latest_discussion_root(chat_id: int):
+    """
+    Last-resort live safety net. In addition to updates, inspect the newest
+    discussion root once per second. This covers roots/replies that an update
+    handler never associated while keeping the polling scope to one root.
+    """
+    try:
+        peer, _ = await get_channel_peers(chat_id)
+        while True:
+            try:
+                result = await app.invoke(
+                    raw.functions.messages.GetHistory(
+                        peer=peer,
+                        offset_id=0,
+                        offset_date=0,
+                        add_offset=0,
+                        limit=100,
+                        max_id=0,
+                        min_id=0,
+                        hash=0,
+                    )
+                )
+                latest_root = None
+                for item in getattr(result, "messages", []):
+                    if not isinstance(item, raw.types.Message):
+                        continue
+                    fwd_from = getattr(getattr(item, "fwd_from", None), "from_id", None)
+                    if isinstance(fwd_from, PeerChannel):
+                        latest_root = item
+                        break
+
+                if latest_root is not None:
+                    root_key = (chat_id, latest_root.id)
+                    reply_count = getattr(getattr(latest_root, "replies", None), "replies", 0)
+                    if reply_count >= 1 and root_key not in comment_attempted:
+                        comment_attempted.add(root_key)
+                        waiting_roots.pop(root_key, None)
+                        print(f"[POLL FOUND ACTIVE ROOT] {root_key} replies={reply_count}")
+                        await send_comment_after_external_reply(chat_id, latest_root.id)
+            except Exception as exc:
+                print(f"[POLL ERROR] chat={chat_id}: {exc!r}")
+
+            await asyncio.sleep(1.0)
+    except asyncio.CancelledError:
+        raise
+
+
 async def watch_discussion_root(chat_id: int, root_message_id: int):
     """
     Safety net for a busy group: if a raw reply update is delayed or processed
@@ -447,6 +494,11 @@ async def main():
         # ephemeral GitHub Actions runner connected.
         for chat_id in COMMENT_GROUPS:
             await recover_recent_discussion_root(chat_id)
+
+        # Independent one-second fallback: raw updates remain the fast path,
+        # while this prevents a busy group from losing a root entirely.
+        for chat_id in COMMENT_GROUPS:
+            asyncio.create_task(poll_latest_discussion_root(chat_id))
 
         # GitHub Actions بعد از هر اجرا از نو شروع می‌شود؛ پس پیام‌های
         # عادیِ اخیر را یک‌بار index می‌کنیم تا حذف آن‌ها بدون lookup اضافی باشد.
