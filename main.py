@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import secrets
+import traceback
 from collections import defaultdict
 
 from pyrogram import Client, filters, idle, raw
@@ -66,6 +67,8 @@ comment_attempted = set()
 recovery_checked = set()
 # One lightweight watcher per newly detected discussion root.
 thread_watchers = {}
+# Logs one reply sample per discussion root; avoids flooding Actions logs in busy groups.
+logged_reply_roots = set()
 
 
 def chat_id_from_channel_id(channel_id: int) -> int:
@@ -297,7 +300,11 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """
     try:
         peer, _ = await get_channel_peers(chat_id)
-        await app.invoke(
+        print(
+            f"[COMMENT SEND ATTEMPT] chat={chat_id} root={root_message_id} "
+            f"peer_type={type(peer).__name__} peer_channel_id={getattr(peer, 'channel_id', None)}"
+        )
+        result = await app.invoke(
             raw.functions.messages.SendMessage(
                 peer=peer,
                 message=COMMENT_TEXT,
@@ -306,7 +313,10 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
                 no_webpage=True,
             )
         )
-        print(f"[COMMENT SENT] {chat_id}/{root_message_id}")
+        print(
+            f"[COMMENT SENT] chat={chat_id} root={root_message_id} "
+            f"updates_type={type(result).__name__}"
+        )
 
         # Notification never blocks the comment send.
         internal_chat_id = str(chat_id)[4:] if str(chat_id).startswith("-100") else str(abs(chat_id))
@@ -319,9 +329,10 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
 
     except FloodWait as exc:
         # A delayed retry is not useful for the intended fast-comment behavior.
-        print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}")
+        print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}", flush=True)
     except Exception as exc:
-        print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}")
+        print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
 
 
 @app.on_message(filters.chat(list(DELETE_GROUPS)) & filters.outgoing)
@@ -365,7 +376,11 @@ async def on_raw_update(client, update, users, chats):
                     thread_watchers[root_key] = asyncio.create_task(
                         watch_discussion_root(chat_id, message_id)
                     )
-                print(f"[WAITING FOR FIRST COMMENT] {chat_id}/{message_id}")
+                print(
+                    f"[ROOT DETECTED] chat={chat_id} root={message_id} "
+                    f"source_channel={fwd_from.channel_id}",
+                    flush=True,
+                )
             return
 
         # Only an incoming reply to one of our tracked roots starts the send.
@@ -373,6 +388,17 @@ async def on_raw_update(client, update, users, chats):
             reply_header = getattr(message, "reply_to", None)
             reply_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
             top_id = getattr(reply_header, "reply_to_top_id", None) if reply_header else None
+
+            candidate_root_id = top_id or reply_id
+            debug_key = (chat_id, candidate_root_id)
+            if candidate_root_id and debug_key not in logged_reply_roots:
+                logged_reply_roots.add(debug_key)
+                print(
+                    f"[COMMENT REPLY SAMPLE] chat={chat_id} msg={message_id} "
+                    f"reply_to_msg_id={reply_id} reply_to_top_id={top_id} "
+                    f"out={is_outgoing} waiting_roots={list(waiting_roots.keys())[:5]}",
+                    flush=True,
+                )
 
             root_key = None
             for candidate in waiting_roots:
