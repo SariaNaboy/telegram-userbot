@@ -18,8 +18,6 @@ from pyrogram.raw.types import (
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION = os.environ["SESSION_STRING"]
-
-# پشتیبانی از نام فعلی secret در workflow و نام استاندارد env.
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 
 DELETE_GROUPS = {
@@ -27,7 +25,6 @@ DELETE_GROUPS = {
     -1003984885147,
     -1001596320253,
 }
-
 COMMENT_GROUPS = {
     -1003984885147,
     -1001596320253,
@@ -37,14 +34,9 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-
 COMMENT_TEXT = "🤔🤔🤔🤔"
-# اگر تا این مدت هیچ‌کس کامنت نگذارد، ما هم کامنت نمی‌گذاریم.
 WAIT_FOR_FIRST_COMMENT = 120
-# پیام‌های اخیر خودت را در شروع هر runner ثبت می‌کنیم؛ Actionها حافظهٔ دائمی ندارند.
 OWN_MESSAGE_HISTORY_LIMIT = 1000
-# On GitHub Actions startup, inspect this many recent messages to recover the
-# currently active discussion post that may have arrived before the runner.
 COMMENT_RECOVERY_HISTORY_LIMIT = 1500
 
 app = Client(
@@ -59,15 +51,11 @@ app = Client(
 MY_USER_ID = None
 peer_cache = {}
 my_messages = defaultdict(set)
-# {(discussion_chat_id, forwarded_root_message_id): deadline}
+# root_key = (discussion_chat_id, forwarded_root_message_id)
 waiting_roots = {}
-# هر root فقط یک بار برای کامنت تلاش می‌شود.
 comment_attempted = set()
-# Roots recovered from an out-of-order reply update; prevents repeated lookups.
-recovery_checked = set()
-# One lightweight watcher per newly detected discussion root.
 thread_watchers = {}
-# Logs one reply sample per discussion root; avoids flooding Actions logs in busy groups.
+recovery_checked = set()
 logged_reply_roots = set()
 
 
@@ -77,18 +65,15 @@ def chat_id_from_channel_id(channel_id: int) -> int:
 
 async def notify_admin(text: str):
     if not ADMIN_USERNAME:
-        print("[ADMIN NOTIFY SKIPPED] ADMIN_USERNAME is not configured")
         return
-
     try:
         await app.send_message(ADMIN_USERNAME, text)
-        print("[ADMIN NOTIFIED]")
+        print("[ADMIN NOTIFIED]", flush=True)
     except Exception as exc:
-        print(f"[ADMIN NOTIFY ERROR] {exc!r}")
+        print(f"[ADMIN NOTIFY ERROR] {exc!r}", flush=True)
 
 
 async def get_channel_peers(chat_id: int):
-    """Return (InputPeerChannel, InputChannel), cached after startup."""
     cached = peer_cache.get(chat_id)
     if cached is not None:
         return cached
@@ -97,124 +82,298 @@ async def get_channel_peers(chat_id: int):
     if not isinstance(peer, InputPeerChannel):
         raise TypeError(f"{chat_id} is not a channel/supergroup")
 
-    channel = InputChannel(
-        channel_id=peer.channel_id,
-        access_hash=peer.access_hash,
-    )
+    channel = InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash)
     peer_cache[chat_id] = (peer, channel)
     return peer, channel
 
 
 async def index_recent_own_messages(chat_id: int):
-    """Populate the fast cache for messages sent before this Action run started."""
     indexed = 0
     try:
         async for item in app.get_chat_history(chat_id, limit=OWN_MESSAGE_HISTORY_LIMIT):
             sender = getattr(item, "from_user", None)
-            if getattr(item, "outgoing", False) or (sender is not None and sender.id == MY_USER_ID):
+            if getattr(item, "outgoing", False) or (
+                sender is not None and sender.id == MY_USER_ID
+            ):
                 my_messages[chat_id].add(item.id)
                 indexed += 1
-        print(f"[OWN HISTORY INDEXED] chat={chat_id} messages={indexed}")
+        print(f"[OWN HISTORY INDEXED] chat={chat_id} messages={indexed}", flush=True)
     except Exception as exc:
-        print(f"[OWN HISTORY INDEX ERROR] chat={chat_id}: {exc!r}")
+        print(f"[OWN HISTORY INDEX ERROR] chat={chat_id}: {exc!r}", flush=True)
 
 
 async def target_is_mine(chat_id: int, message_id: int) -> bool:
-    """
-    Fast path is my_messages. This fallback makes messages sent before this
-    process started work too.
-    """
     if message_id in my_messages[chat_id]:
         return True
 
     try:
         target = await app.get_messages(chat_id, message_id)
     except Exception as exc:
-        print(f"[TARGET LOOKUP ERROR] {chat_id}/{message_id}: {exc!r}")
+        print(f"[TARGET LOOKUP ERROR] {chat_id}/{message_id}: {exc!r}", flush=True)
         return False
 
     if not target or getattr(target, "empty", False):
         return False
 
-    mine = bool(getattr(target, "outgoing", False))
     sender = getattr(target, "from_user", None)
-    mine = mine or (sender is not None and sender.id == MY_USER_ID)
-
+    mine = bool(getattr(target, "outgoing", False)) or (
+        sender is not None and sender.id == MY_USER_ID
+    )
     if mine:
         my_messages[chat_id].add(message_id)
-
     return mine
 
 
 async def delete_now(chat_id: int, message_id: int):
     try:
         peer, _ = await get_channel_peers(chat_id)
-        await app.invoke(
-            raw.functions.channels.DeleteMessages(
-                channel=peer,
-                id=[message_id],
-            )
-        )
+        await app.invoke(raw.functions.channels.DeleteMessages(channel=peer, id=[message_id]))
         my_messages[chat_id].discard(message_id)
-        print(f"[DELETED] {chat_id}/{message_id}")
-
+        print(f"[DELETED] {chat_id}/{message_id}", flush=True)
     except FloodWait as exc:
-        # Deleting late is still better than not deleting at all.
-        print(f"[DELETE FLOOD] wait={exc.value}s {chat_id}/{message_id}")
+        print(f"[DELETE FLOOD] wait={exc.value}s {chat_id}/{message_id}", flush=True)
         await asyncio.sleep(exc.value + 1)
         try:
             peer, _ = await get_channel_peers(chat_id)
-            await app.invoke(
-                raw.functions.channels.DeleteMessages(
-                    channel=peer,
-                    id=[message_id],
-                )
-            )
+            await app.invoke(raw.functions.channels.DeleteMessages(channel=peer, id=[message_id]))
             my_messages[chat_id].discard(message_id)
-            print(f"[DELETED AFTER FLOOD] {chat_id}/{message_id}")
+            print(f"[DELETED AFTER FLOOD] {chat_id}/{message_id}", flush=True)
         except Exception as retry_exc:
-            print(f"[DELETE RETRY ERROR] {chat_id}/{message_id}: {retry_exc!r}")
-
+            print(f"[DELETE RETRY ERROR] {chat_id}/{message_id}: {retry_exc!r}", flush=True)
     except Exception as exc:
-        print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}")
+        print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}", flush=True)
+
+
+async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
+    """Send one reply to a discussion root. The caller must reserve the root first."""
+    try:
+        peer, _ = await get_channel_peers(chat_id)
+        print(
+            f"[COMMENT SEND ATTEMPT] chat={chat_id} root={root_message_id} "
+            f"peer_channel_id={peer.channel_id}",
+            flush=True,
+        )
+        result = await app.invoke(
+            raw.functions.messages.SendMessage(
+                peer=peer,
+                message=COMMENT_TEXT,
+                random_id=secrets.randbits(63),
+                reply_to_msg_id=root_message_id,
+                no_webpage=True,
+            )
+        )
+        print(
+            f"[COMMENT SENT] chat={chat_id} root={root_message_id} "
+            f"updates_type={type(result).__name__}",
+            flush=True,
+        )
+        internal_id = str(chat_id)[4:] if str(chat_id).startswith("-100") else str(abs(chat_id))
+        asyncio.create_task(notify_admin(
+            "کامنت ثبت شد:\n"
+            f"https://t.me/c/{internal_id}/{root_message_id}"
+        ))
+    except FloodWait as exc:
+        print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}", flush=True)
+    except Exception as exc:
+        print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
+async def reserve_and_send_comment(chat_id: int, root_message_id: int, reason: str):
+    """Atomically reserve a root in this process, then send exactly once."""
+    root_key = (chat_id, root_message_id)
+    if root_key in comment_attempted:
+        return False
+
+    comment_attempted.add(root_key)
+    waiting_roots.pop(root_key, None)
+    print(f"[COMMENT RESERVED] {root_key} reason={reason}", flush=True)
+    await send_comment_after_external_reply(chat_id, root_message_id)
+    return True
 
 
 async def watch_discussion_root(chat_id: int, root_message_id: int):
-    """
-    Safety net for a busy group: if a raw reply update is delayed or processed
-    out of order, poll the documented server-side reply count until the first
-    comment appears. It never sends while the count is zero.
-    """
+    """Wait at most WAIT_FOR_FIRST_COMMENT seconds for the first external reply."""
     root_key = (chat_id, root_message_id)
     deadline = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+    last_count = None
 
     try:
         while time.monotonic() < deadline:
             if root_key in comment_attempted:
                 return
-
             try:
                 count = await app.get_discussion_replies_count(chat_id, root_message_id)
+                if count != last_count:
+                    print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
+                    last_count = count
                 if count >= 1:
-                    if root_key not in comment_attempted:
-                        comment_attempted.add(root_key)
-                        waiting_roots.pop(root_key, None)
-                        print(f"[WATCHER FOUND FIRST REPLY] {root_key} count={count}")
-                        await send_comment_after_external_reply(chat_id, root_message_id)
+                    await reserve_and_send_comment(chat_id, root_message_id, "watcher-count")
                     return
             except Exception as exc:
-                # Keep watching: transient RPC failures must not make us miss the post.
-                print(f"[WATCHER COUNT ERROR] {root_key}: {exc!r}")
+                print(f"[WATCHER COUNT ERROR] {root_key}: {exc!r}", flush=True)
+            await asyncio.sleep(1)
 
-            await asyncio.sleep(1.0)
-
-        print(f"[WATCHER TIMEOUT] {root_key}")
+        waiting_roots.pop(root_key, None)
+        print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
     finally:
         thread_watchers.pop(root_key, None)
 
 
+async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
+    """Common root entry point used by high-level and raw handlers."""
+    root_key = (chat_id, root_message_id)
+    if root_key in comment_attempted or root_key in thread_watchers:
+        return
+
+    print(
+        f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
+        f"source_channel={source_channel_id} known_count={known_count} via={source}",
+        flush=True,
+    )
+
+    # A root seen late may already have comments. Do not wait for an update that
+    # happened before this runner connected.
+    if known_count is not None and known_count >= 1:
+        await reserve_and_send_comment(chat_id, root_message_id, "root-already-has-replies")
+        return
+
+    waiting_roots[root_key] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+    thread_watchers[root_key] = asyncio.create_task(
+        watch_discussion_root(chat_id, root_message_id)
+    )
+
+
+# This is the main fix. The supplied high-level Message already contains
+# forward_from_chat and replies, whereas raw update delivery can be missed when
+# an ephemeral runner starts late.
+@app.on_message(filters.chat(list(COMMENT_GROUPS)) & ~filters.outgoing)
+async def detect_discussion_root_high_level(client, message):
+    try:
+        forwarded_from = getattr(message, "forward_from_chat", None)
+        if not forwarded_from:
+            return
+
+        replies_obj = getattr(message, "replies", None)
+        reply_count = getattr(replies_obj, "replies", None) if replies_obj else None
+        await observe_discussion_root(
+            message.chat.id,
+            message.id,
+            source_channel_id=getattr(forwarded_from, "id", None),
+            known_count=reply_count,
+            source="high-level",
+        )
+    except Exception as exc:
+        print(f"[HIGH LEVEL ROOT ERROR] {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
+@app.on_message(filters.chat(list(DELETE_GROUPS)) & filters.outgoing)
+async def remember_outgoing_message(client, message):
+    my_messages[message.chat.id].add(message.id)
+    print(f"[MY MESSAGE HIGH LEVEL] {message.chat.id}/{message.id}", flush=True)
+
+
+@app.on_raw_update()
+async def on_raw_update(client, update, users, chats):
+    if not isinstance(update, UpdateNewChannelMessage):
+        return
+
+    message = update.message
+    if not isinstance(message, raw.types.Message):
+        return
+    peer = getattr(message, "peer_id", None)
+    if not isinstance(peer, PeerChannel):
+        return
+
+    chat_id = chat_id_from_channel_id(peer.channel_id)
+    message_id = message.id
+    is_outgoing = bool(getattr(message, "out", False))
+
+    try:
+        # Raw fallback: useful if a high-level update is delivered out of order.
+        if chat_id in COMMENT_GROUPS:
+            fwd_from = getattr(getattr(message, "fwd_from", None), "from_id", None)
+            if isinstance(fwd_from, PeerChannel):
+                replies_obj = getattr(message, "replies", None)
+                reply_count = getattr(replies_obj, "replies", None) if replies_obj else None
+                await observe_discussion_root(
+                    chat_id, message_id, fwd_from.channel_id, reply_count, "raw"
+                )
+                return
+
+            if not is_outgoing:
+                reply_header = getattr(message, "reply_to", None)
+                reply_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
+                top_id = getattr(reply_header, "reply_to_top_id", None) if reply_header else None
+                candidate_root_id = top_id or reply_id
+
+                if candidate_root_id:
+                    sample_key = (chat_id, candidate_root_id)
+                    if sample_key not in logged_reply_roots:
+                        logged_reply_roots.add(sample_key)
+                        print(
+                            f"[COMMENT REPLY SAMPLE] chat={chat_id} msg={message_id} "
+                            f"reply_to={reply_id} top={top_id}",
+                            flush=True,
+                        )
+
+                    if sample_key in waiting_roots:
+                        await reserve_and_send_comment(chat_id, candidate_root_id, "raw-external-reply")
+                    elif sample_key not in recovery_checked:
+                        recovery_checked.add(sample_key)
+                        # Reply may arrive before its root update. Confirm that the
+                        # referenced message really is a forwarded discussion root.
+                        root = await app.get_messages(chat_id, candidate_root_id)
+                        if root and getattr(root, "forward_from_chat", None):
+                            replies = getattr(root, "replies", None)
+                            count = getattr(replies, "replies", None) if replies else None
+                            await observe_discussion_root(
+                                chat_id,
+                                candidate_root_id,
+                                getattr(root.forward_from_chat, "id", None),
+                                count,
+                                "reply-recovery",
+                            )
+
+        # Delete logic.
+        if chat_id not in DELETE_GROUPS:
+            return
+
+        from_id = getattr(message, "from_id", None)
+        mine = is_outgoing or (
+            isinstance(from_id, PeerUser)
+            and MY_USER_ID is not None
+            and from_id.user_id == MY_USER_ID
+        )
+        if mine:
+            my_messages[chat_id].add(message_id)
+            print(f"[MY MESSAGE] {chat_id}/{message_id}", flush=True)
+            return
+
+        reply_header = getattr(message, "reply_to", None)
+        replied_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
+        if not replied_id:
+            return
+
+        text = (getattr(message, "message", "") or "").casefold()
+        if not any(word.casefold() in text for word in TRIGGER_WORDS):
+            return
+        if not await target_is_mine(chat_id, replied_id):
+            print(f"[TRIGGER IGNORED: TARGET NOT MINE] {chat_id}/{replied_id}", flush=True)
+            return
+
+        print(f"[DELETE TRIGGER] {chat_id}/{replied_id} by reply={message_id}", flush=True)
+        await delete_now(chat_id, replied_id)
+
+    except Exception as exc:
+        # Never let one malformed/raw update silently kill the diagnostic path.
+        print(f"[RAW HANDLER ERROR] chat={chat_id} msg={message_id}: {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
 async def find_recent_active_discussion_root(chat_id: int):
-    """Find the newest forwarded channel post that already has at least one reply."""
+    """Find the newest forwarded discussion root that already has a reply."""
     peer, _ = await get_channel_peers(chat_id)
     offset_id = 0
     scanned = 0
@@ -242,244 +401,52 @@ async def find_recent_active_discussion_root(chat_id: int):
             fwd_from = getattr(getattr(item, "fwd_from", None), "from_id", None)
             replies = getattr(getattr(item, "replies", None), "replies", 0)
             if isinstance(fwd_from, PeerChannel) and replies >= 1:
-                return item.id
+                return item.id, fwd_from.channel_id, replies
 
         ids = [item.id for item in messages if hasattr(item, "id")]
         if not ids:
             return None
         offset_id = min(ids)
         scanned += len(messages)
-
     return None
 
 
 async def recover_recent_discussion_root(chat_id: int):
-    """Startup recovery for posts that appeared before this Action runner started."""
     try:
-        root_id = await find_recent_active_discussion_root(chat_id)
-        if root_id is None:
-            print(f"[NO RECENT ACTIVE ROOT] chat={chat_id}")
+        found = await find_recent_active_discussion_root(chat_id)
+        if found is None:
+            print(f"[NO RECENT ACTIVE ROOT] chat={chat_id}", flush=True)
             return
-
-        root_key = (chat_id, root_id)
-        if root_key in comment_attempted:
-            return
-
-        comment_attempted.add(root_key)
-        print(f"[STARTUP ROOT RECOVERY] {root_key}")
-        await send_comment_after_external_reply(chat_id, root_id)
+        root_id, source_channel_id, count = found
+        print(f"[STARTUP ROOT RECOVERY] chat={chat_id} root={root_id} count={count}", flush=True)
+        await observe_discussion_root(
+            chat_id, root_id, source_channel_id, count, "startup-recovery"
+        )
     except Exception as exc:
-        print(f"[STARTUP ROOT RECOVERY ERROR] chat={chat_id}: {exc!r}")
-
-
-async def recover_root_from_reply(chat_id: int, root_message_id: int):
-    """Fallback for busy groups when a reply update is processed before its root update."""
-    root_key = (chat_id, root_message_id)
-    if root_key in comment_attempted or root_key in recovery_checked:
-        return
-
-    recovery_checked.add(root_key)
-    try:
-        root = await app.get_messages(chat_id, root_message_id)
-        # An automatic discussion post is represented as a forward from a channel.
-        if not root or not getattr(root, "forward_from_chat", None):
-            return
-
-        comment_attempted.add(root_key)
-        print(f"[RECOVERED DISCUSSION ROOT] {root_key}")
-        await send_comment_after_external_reply(chat_id, root_message_id)
-    except Exception as exc:
-        print(f"[ROOT RECOVERY ERROR] {root_key}: {exc!r}")
-
-
-async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
-    """
-    This runs only after an incoming reply to the root was received. That update
-    is already a server-confirmed earlier comment, so another count RPC is both
-    unnecessary and costly in a busy discussion group.
-    """
-    try:
-        peer, _ = await get_channel_peers(chat_id)
-        print(
-            f"[COMMENT SEND ATTEMPT] chat={chat_id} root={root_message_id} "
-            f"peer_type={type(peer).__name__} peer_channel_id={getattr(peer, 'channel_id', None)}"
-        )
-        result = await app.invoke(
-            raw.functions.messages.SendMessage(
-                peer=peer,
-                message=COMMENT_TEXT,
-                random_id=secrets.randbits(63),
-                reply_to_msg_id=root_message_id,
-                no_webpage=True,
-            )
-        )
-        print(
-            f"[COMMENT SENT] chat={chat_id} root={root_message_id} "
-            f"updates_type={type(result).__name__}"
-        )
-
-        # Notification never blocks the comment send.
-        internal_chat_id = str(chat_id)[4:] if str(chat_id).startswith("-100") else str(abs(chat_id))
-        asyncio.create_task(
-            notify_admin(
-                "کامنت ثبت شد:\n"
-                f"https://t.me/c/{internal_chat_id}/{root_message_id}"
-            )
-        )
-
-    except FloodWait as exc:
-        # A delayed retry is not useful for the intended fast-comment behavior.
-        print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}", flush=True)
-    except Exception as exc:
-        print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}", flush=True)
+        print(f"[STARTUP ROOT RECOVERY ERROR] chat={chat_id}: {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
-
-
-@app.on_message(filters.chat(list(DELETE_GROUPS)) & filters.outgoing)
-async def remember_outgoing_message(client, message):
-    """High-level backup: ensures normal outgoing group messages enter the fast cache."""
-    my_messages[message.chat.id].add(message.id)
-    print(f"[MY MESSAGE HIGH LEVEL] {message.chat.id}/{message.id}")
-
-
-@app.on_raw_update()
-async def on_raw_update(client, update, users, chats):
-    if not isinstance(update, UpdateNewChannelMessage):
-        return
-
-    message = update.message
-    if not isinstance(message, raw.types.Message):
-        return
-
-    peer = getattr(message, "peer_id", None)
-    if not isinstance(peer, PeerChannel):
-        return
-
-    chat_id = chat_id_from_channel_id(peer.channel_id)
-    message_id = message.id
-    is_outgoing = bool(getattr(message, "out", False))
-
-    # ----- Comment logic: observe a forwarded channel post, but DO NOT send. -----
-    if chat_id in COMMENT_GROUPS:
-        now = time.monotonic()
-        for key, deadline in list(waiting_roots.items()):
-            if deadline <= now:
-                waiting_roots.pop(key, None)
-                print(f"[COMMENT TIMEOUT] {key}")
-
-        fwd_from = getattr(getattr(message, "fwd_from", None), "from_id", None)
-        if isinstance(fwd_from, PeerChannel):
-            root_key = (chat_id, message_id)
-            if root_key not in comment_attempted:
-                waiting_roots.setdefault(root_key, now + WAIT_FOR_FIRST_COMMENT)
-                if root_key not in thread_watchers:
-                    thread_watchers[root_key] = asyncio.create_task(
-                        watch_discussion_root(chat_id, message_id)
-                    )
-                print(
-                    f"[ROOT DETECTED] chat={chat_id} root={message_id} "
-                    f"source_channel={fwd_from.channel_id}",
-                    flush=True,
-                )
-            return
-
-        # Only an incoming reply to one of our tracked roots starts the send.
-        if not is_outgoing:
-            reply_header = getattr(message, "reply_to", None)
-            reply_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
-            top_id = getattr(reply_header, "reply_to_top_id", None) if reply_header else None
-
-            candidate_root_id = top_id or reply_id
-            debug_key = (chat_id, candidate_root_id)
-            if candidate_root_id and debug_key not in logged_reply_roots:
-                logged_reply_roots.add(debug_key)
-                print(
-                    f"[COMMENT REPLY SAMPLE] chat={chat_id} msg={message_id} "
-                    f"reply_to_msg_id={reply_id} reply_to_top_id={top_id} "
-                    f"out={is_outgoing} waiting_roots={list(waiting_roots.keys())[:5]}",
-                    flush=True,
-                )
-
-            root_key = None
-            for candidate in waiting_roots:
-                candidate_chat, candidate_root = candidate
-                if candidate_chat == chat_id and (reply_id == candidate_root or top_id == candidate_root):
-                    root_key = candidate
-                    break
-
-            if root_key is not None:
-                waiting_roots.pop(root_key, None)
-                comment_attempted.add(root_key)
-                print(f"[EXTERNAL COMMENT SEEN] {root_key}")
-
-                # The external update is already proof that a comment exists on Telegram.
-                await send_comment_after_external_reply(chat_id, root_key[1])
-
-            elif top_id or reply_id:
-                # Busy groups can deliver/process a reply before the root forward has
-                # entered waiting_roots. Recover the root once instead of missing it.
-                await recover_root_from_reply(chat_id, top_id or reply_id)
-
-    # ----- Delete logic -----
-    if chat_id not in DELETE_GROUPS:
-        return
-
-    from_id = getattr(message, "from_id", None)
-    mine = is_outgoing or (
-        isinstance(from_id, PeerUser)
-        and MY_USER_ID is not None
-        and from_id.user_id == MY_USER_ID
-    )
-
-    if mine:
-        my_messages[chat_id].add(message_id)
-        print(f"[MY MESSAGE] {chat_id}/{message_id}")
-        return
-
-    reply_header = getattr(message, "reply_to", None)
-    replied_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
-    if not replied_id:
-        return
-
-    text = (getattr(message, "message", "") or "").casefold()
-    if not any(word.casefold() in text for word in TRIGGER_WORDS):
-        return
-
-    # This fallback also supports your messages from before process startup.
-    if not await target_is_mine(chat_id, replied_id):
-        print(f"[TRIGGER IGNORED: TARGET NOT MINE] {chat_id}/{replied_id}")
-        return
-
-    print(f"[DELETE TRIGGER] {chat_id}/{replied_id} by reply={message_id}")
-    await delete_now(chat_id, replied_id)
 
 
 async def main():
     global MY_USER_ID
-
     async with app:
         me = await app.get_me()
         MY_USER_ID = me.id
-        print(f"[LOGGED IN] id={MY_USER_ID}")
+        print(f"[LOGGED IN] id={MY_USER_ID}", flush=True)
 
         for chat_id in DELETE_GROUPS | COMMENT_GROUPS:
             try:
                 await get_channel_peers(chat_id)
-                print(f"[READY] {chat_id}")
+                print(f"[READY] {chat_id}", flush=True)
             except Exception as exc:
-                print(f"[PREWARM ERROR] {chat_id}: {exc!r}")
+                print(f"[PREWARM ERROR] {chat_id}: {exc!r}", flush=True)
 
-        # Recover an active discussion post that was published before this
-        # ephemeral GitHub Actions runner connected.
         for chat_id in COMMENT_GROUPS:
             await recover_recent_discussion_root(chat_id)
-
-        # GitHub Actions بعد از هر اجرا از نو شروع می‌شود؛ پس پیام‌های
-        # عادیِ اخیر را یک‌بار index می‌کنیم تا حذف آن‌ها بدون lookup اضافی باشد.
         for chat_id in DELETE_GROUPS:
             await index_recent_own_messages(chat_id)
 
-        print("[STARTED]")
+        print("[STARTED]", flush=True)
         await idle()
 
 
