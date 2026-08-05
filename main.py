@@ -36,6 +36,12 @@ COMMENT_GROUPS = {
 DISCUSSION_SOURCE_CHANNELS = {
     -1001279727614,
 }
+# Username is used only by the low-rate fallback poller to resolve the source
+# channel in a fresh GitHub Actions session.
+DISCUSSION_SOURCE_USERNAMES = {
+    "@Radiokocsher": -1001279727614,
+}
+SOURCE_POLL_INTERVAL = 3.0
 
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
@@ -64,6 +70,7 @@ comment_attempted = set()
 thread_watchers = {}
 recovery_checked = set()
 logged_reply_roots = set()
+seen_source_posts = set()
 
 
 def chat_id_from_channel_id(channel_id: int) -> int:
@@ -225,6 +232,53 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
     finally:
         thread_watchers.pop(root_key, None)
+
+
+async def poll_source_channel(username: str, source_chat_id: int):
+    """Fallback when Telegram does not deliver a source-channel update to this session.
+
+    One GetHistory request every three seconds for one configured channel is
+    intentionally bounded; it is not a high-rate poll of discussion groups.
+    """
+    try:
+        source_peer = await app.resolve_peer(username)
+        print(f"[SOURCE POLLER READY] source={source_chat_id} username={username}", flush=True)
+
+        while True:
+            try:
+                result = await app.invoke(
+                    raw.functions.messages.GetHistory(
+                        peer=source_peer,
+                        offset_id=0,
+                        offset_date=0,
+                        add_offset=0,
+                        limit=10,
+                        max_id=0,
+                        min_id=0,
+                        hash=0,
+                    )
+                )
+                posts = [
+                    item for item in getattr(result, "messages", [])
+                    if isinstance(item, raw.types.Message) and getattr(item, "post", False)
+                ]
+                if posts:
+                    latest = posts[0]
+                    source_key = (source_chat_id, latest.id)
+                    if source_key not in seen_source_posts:
+                        seen_source_posts.add(source_key)
+                        print(f"[SOURCE POLLER POST] source={source_chat_id}/{latest.id}", flush=True)
+                        await observe_channel_post_discussion(source_chat_id, latest.id)
+            except Exception as exc:
+                print(f"[SOURCE POLLER ERROR] source={source_chat_id}: {exc!r}", flush=True)
+                print(traceback.format_exc(), flush=True)
+
+            await asyncio.sleep(SOURCE_POLL_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[SOURCE POLLER START ERROR] source={source_chat_id}: {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
 
 
 async def observe_channel_post_discussion(source_chat_id: int, source_message_id: int):
@@ -498,6 +552,12 @@ async def main():
 
         for chat_id in COMMENT_GROUPS:
             await recover_recent_discussion_root(chat_id)
+
+        # Telegram update delivery is the fast path. This source-channel poller
+        # is a bounded fallback for sessions that receive no discussion updates.
+        for username, source_chat_id in DISCUSSION_SOURCE_USERNAMES.items():
+            asyncio.create_task(poll_source_channel(username, source_chat_id))
+
         for chat_id in DELETE_GROUPS:
             await index_recent_own_messages(chat_id)
 
