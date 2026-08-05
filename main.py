@@ -4,7 +4,7 @@ import asyncio
 import secrets
 from collections import defaultdict
 
-from pyrogram import Client, idle, raw
+from pyrogram import Client, filters, idle, raw
 from pyrogram.errors import FloodWait
 from pyrogram.raw.types import (
     PeerUser,
@@ -37,6 +37,8 @@ TRIGGER_WORDS = {
 COMMENT_TEXT = "🤔🤔🤔🤔"
 # اگر تا این مدت هیچ‌کس کامنت نگذارد، ما هم کامنت نمی‌گذاریم.
 WAIT_FOR_FIRST_COMMENT = 120
+# پیام‌های اخیر خودت را در شروع هر runner ثبت می‌کنیم؛ Actionها حافظهٔ دائمی ندارند.
+OWN_MESSAGE_HISTORY_LIMIT = 1000
 
 app = Client(
     "userbot",
@@ -76,6 +78,20 @@ async def get_channel_peers(chat_id: int):
     )
     peer_cache[chat_id] = (peer, channel)
     return peer, channel
+
+
+async def index_recent_own_messages(chat_id: int):
+    """Populate the fast cache for messages sent before this Action run started."""
+    indexed = 0
+    try:
+        async for item in app.get_chat_history(chat_id, limit=OWN_MESSAGE_HISTORY_LIMIT):
+            sender = getattr(item, "from_user", None)
+            if getattr(item, "outgoing", False) or (sender is not None and sender.id == MY_USER_ID):
+                my_messages[chat_id].add(item.id)
+                indexed += 1
+        print(f"[OWN HISTORY INDEXED] chat={chat_id} messages={indexed}")
+    except Exception as exc:
+        print(f"[OWN HISTORY INDEX ERROR] chat={chat_id}: {exc!r}")
 
 
 async def target_is_mine(chat_id: int, message_id: int) -> bool:
@@ -169,6 +185,13 @@ async def verify_then_comment(chat_id: int, root_message_id: int):
 
     except Exception as exc:
         print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}")
+
+
+@app.on_message(filters.chat(list(DELETE_GROUPS)) & filters.outgoing)
+async def remember_outgoing_message(client, message):
+    """High-level backup: ensures normal outgoing group messages enter the fast cache."""
+    my_messages[message.chat.id].add(message.id)
+    print(f"[MY MESSAGE HIGH LEVEL] {message.chat.id}/{message.id}")
 
 
 @app.on_raw_update()
@@ -273,6 +296,11 @@ async def main():
                 print(f"[READY] {chat_id}")
             except Exception as exc:
                 print(f"[PREWARM ERROR] {chat_id}: {exc!r}")
+
+        # GitHub Actions بعد از هر اجرا از نو شروع می‌شود؛ پس پیام‌های
+        # عادیِ اخیر را یک‌بار index می‌کنیم تا حذف آن‌ها بدون lookup اضافی باشد.
+        for chat_id in DELETE_GROUPS:
+            await index_recent_own_messages(chat_id)
 
         print("[STARTED]")
         await idle()
