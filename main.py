@@ -42,6 +42,9 @@ COMMENT_TEXT = "🤔🤔🤔🤔"
 WAIT_FOR_FIRST_COMMENT = 120
 # پیام‌های اخیر خودت را در شروع هر runner ثبت می‌کنیم؛ Actionها حافظهٔ دائمی ندارند.
 OWN_MESSAGE_HISTORY_LIMIT = 1000
+# On GitHub Actions startup, inspect this many recent messages to recover the
+# currently active discussion post that may have arrived before the runner.
+COMMENT_RECOVERY_HISTORY_LIMIT = 1500
 
 app = Client(
     "userbot",
@@ -169,6 +172,65 @@ async def delete_now(chat_id: int, message_id: int):
 
     except Exception as exc:
         print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}")
+
+
+async def find_recent_active_discussion_root(chat_id: int):
+    """Find the newest forwarded channel post that already has at least one reply."""
+    peer, _ = await get_channel_peers(chat_id)
+    offset_id = 0
+    scanned = 0
+
+    while scanned < COMMENT_RECOVERY_HISTORY_LIMIT:
+        result = await app.invoke(
+            raw.functions.messages.GetHistory(
+                peer=peer,
+                offset_id=offset_id,
+                offset_date=0,
+                add_offset=0,
+                limit=min(100, COMMENT_RECOVERY_HISTORY_LIMIT - scanned),
+                max_id=0,
+                min_id=0,
+                hash=0,
+            )
+        )
+        messages = getattr(result, "messages", [])
+        if not messages:
+            return None
+
+        for item in messages:
+            if not isinstance(item, raw.types.Message):
+                continue
+            fwd_from = getattr(getattr(item, "fwd_from", None), "from_id", None)
+            replies = getattr(getattr(item, "replies", None), "replies", 0)
+            if isinstance(fwd_from, PeerChannel) and replies >= 1:
+                return item.id
+
+        ids = [item.id for item in messages if hasattr(item, "id")]
+        if not ids:
+            return None
+        offset_id = min(ids)
+        scanned += len(messages)
+
+    return None
+
+
+async def recover_recent_discussion_root(chat_id: int):
+    """Startup recovery for posts that appeared before this Action runner started."""
+    try:
+        root_id = await find_recent_active_discussion_root(chat_id)
+        if root_id is None:
+            print(f"[NO RECENT ACTIVE ROOT] chat={chat_id}")
+            return
+
+        root_key = (chat_id, root_id)
+        if root_key in comment_attempted:
+            return
+
+        comment_attempted.add(root_key)
+        print(f"[STARTUP ROOT RECOVERY] {root_key}")
+        await send_comment_after_external_reply(chat_id, root_id)
+    except Exception as exc:
+        print(f"[STARTUP ROOT RECOVERY ERROR] chat={chat_id}: {exc!r}")
 
 
 async def recover_root_from_reply(chat_id: int, root_message_id: int):
@@ -340,6 +402,11 @@ async def main():
                 print(f"[READY] {chat_id}")
             except Exception as exc:
                 print(f"[PREWARM ERROR] {chat_id}: {exc!r}")
+
+        # Recover an active discussion post that was published before this
+        # ephemeral GitHub Actions runner connected.
+        for chat_id in COMMENT_GROUPS:
+            await recover_recent_discussion_root(chat_id)
 
         # GitHub Actions بعد از هر اجرا از نو شروع می‌شود؛ پس پیام‌های
         # عادیِ اخیر را یک‌بار index می‌کنیم تا حذف آن‌ها بدون lookup اضافی باشد.
