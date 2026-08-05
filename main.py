@@ -64,6 +64,8 @@ waiting_roots = {}
 comment_attempted = set()
 # Roots recovered from an out-of-order reply update; prevents repeated lookups.
 recovery_checked = set()
+# One lightweight watcher per newly detected discussion root.
+thread_watchers = {}
 
 
 def chat_id_from_channel_id(channel_id: int) -> int:
@@ -172,6 +174,40 @@ async def delete_now(chat_id: int, message_id: int):
 
     except Exception as exc:
         print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}")
+
+
+async def watch_discussion_root(chat_id: int, root_message_id: int):
+    """
+    Safety net for a busy group: if a raw reply update is delayed or processed
+    out of order, poll the documented server-side reply count until the first
+    comment appears. It never sends while the count is zero.
+    """
+    root_key = (chat_id, root_message_id)
+    deadline = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+
+    try:
+        while time.monotonic() < deadline:
+            if root_key in comment_attempted:
+                return
+
+            try:
+                count = await app.get_discussion_replies_count(chat_id, root_message_id)
+                if count >= 1:
+                    if root_key not in comment_attempted:
+                        comment_attempted.add(root_key)
+                        waiting_roots.pop(root_key, None)
+                        print(f"[WATCHER FOUND FIRST REPLY] {root_key} count={count}")
+                        await send_comment_after_external_reply(chat_id, root_message_id)
+                    return
+            except Exception as exc:
+                # Keep watching: transient RPC failures must not make us miss the post.
+                print(f"[WATCHER COUNT ERROR] {root_key}: {exc!r}")
+
+            await asyncio.sleep(1.0)
+
+        print(f"[WATCHER TIMEOUT] {root_key}")
+    finally:
+        thread_watchers.pop(root_key, None)
 
 
 async def find_recent_active_discussion_root(chat_id: int):
@@ -325,6 +361,10 @@ async def on_raw_update(client, update, users, chats):
             root_key = (chat_id, message_id)
             if root_key not in comment_attempted:
                 waiting_roots.setdefault(root_key, now + WAIT_FOR_FIRST_COMMENT)
+                if root_key not in thread_watchers:
+                    thread_watchers[root_key] = asyncio.create_task(
+                        watch_discussion_root(chat_id, message_id)
+                    )
                 print(f"[WAITING FOR FIRST COMMENT] {chat_id}/{message_id}")
             return
 
