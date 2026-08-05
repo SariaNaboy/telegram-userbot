@@ -169,19 +169,13 @@ async def delete_now(chat_id: int, message_id: int):
         print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}")
 
 
-async def verify_then_comment(chat_id: int, root_message_id: int):
+async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """
-    A server-side count is required. Never send while Telegram reports zero
-    replies, which prevents this client from intentionally becoming first.
+    This runs only after an incoming reply to the root was received. That update
+    is already a server-confirmed earlier comment, so another count RPC is both
+    unnecessary and costly in a busy discussion group.
     """
     try:
-        count = await app.get_discussion_replies_count(chat_id, root_message_id)
-        print(f"[COMMENT COUNT] {chat_id}/{root_message_id}: {count}")
-
-        if count < 1:
-            print(f"[COMMENT CANCELLED: ZERO REPLIES] {chat_id}/{root_message_id}")
-            return
-
         peer, _ = await get_channel_peers(chat_id)
         await app.invoke(
             raw.functions.messages.SendMessage(
@@ -194,8 +188,7 @@ async def verify_then_comment(chat_id: int, root_message_id: int):
         )
         print(f"[COMMENT SENT] {chat_id}/{root_message_id}")
 
-        # Notification is intentionally scheduled after the comment RPC succeeds,
-        # so it never delays the attempt to become an early comment.
+        # Notification never blocks the comment send.
         internal_chat_id = str(chat_id)[4:] if str(chat_id).startswith("-100") else str(abs(chat_id))
         asyncio.create_task(
             notify_admin(
@@ -205,9 +198,8 @@ async def verify_then_comment(chat_id: int, root_message_id: int):
         )
 
     except FloodWait as exc:
-        # Do NOT retry comments: a delayed retry is no longer a fast comment.
+        # A delayed retry is not useful for the intended fast-comment behavior.
         print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}")
-
     except Exception as exc:
         print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}")
 
@@ -252,7 +244,7 @@ async def on_raw_update(client, update, users, chats):
                 print(f"[WAITING FOR FIRST COMMENT] {chat_id}/{message_id}")
             return
 
-        # Only an incoming reply to one of our tracked roots starts verification.
+        # Only an incoming reply to one of our tracked roots starts the send.
         if not is_outgoing:
             reply_header = getattr(message, "reply_to", None)
             reply_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
@@ -270,8 +262,8 @@ async def on_raw_update(client, update, users, chats):
                 comment_attempted.add(root_key)
                 print(f"[EXTERNAL COMMENT SEEN] {root_key}")
 
-                # No intentional delay. Verification is a server-side safety check.
-                await verify_then_comment(chat_id, root_key[1])
+                # The external update is already proof that a comment exists on Telegram.
+                await send_comment_after_external_reply(chat_id, root_key[1])
 
     # ----- Delete logic -----
     if chat_id not in DELETE_GROUPS:
