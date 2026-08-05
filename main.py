@@ -1,44 +1,71 @@
 import os
 import asyncio
+import random
 from pyrogram import Client, raw
-from pyrogram.raw.types import PeerUser, PeerChannel, InputChannel
+from pyrogram.raw.types import PeerUser, PeerChannel, UpdateNewChannelMessage, InputReplyToMessage
 
 API_ID   = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION  = os.getenv("SESSION_STRING")
+ADMIN_USERNAME = os.getenv("admin_username", "@thisisatestforvaset")
 
-TARGET_CHATS = {-1002866597350, -1003984885147, -1001596320253}
+# گروه‌های دیلیت (هر ۳ گروه)
+DELETE_GROUPS = {-1002866597350, -1003984885147, -1001596320253}
+
+# گروه‌های کامنت (فقط ۲ گروه)
+COMMENT_GROUPS = {-1003984885147, -1001596320253}
+
 TRIGGER_WORDS = {"گزارش", "report", "@admin", "صیک", "سیک", "اخطار", "بن", "سکوت", "ban", "mute"}
+COMMENT_TEXT = "🤔🤔🤔🤔"
 
-app = Client(
-    "userbot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=SESSION,
-    sleep_threshold=0,
-    workers=12
-)
+DELAY_MIN = 1.5
+DELAY_MAX = 3.5
+
+app = Client("userbot", api_id=API_ID, api_hash=API_HASH, session_string=SESSION, sleep_threshold=0, workers=12)
 
 my_messages: dict[int, set[int]] = {}
-channel_cache: dict[int, InputChannel] = {}
-MY_USER_ID: int | None = None
+peer_cache = {}
+MY_USER_ID = None
+sent_for = set()
 
 
-async def get_input_channel(client: Client, chat_id: int) -> InputChannel:
-    if chat_id not in channel_cache:
-        peer = await client.resolve_peer(chat_id)
-        channel_cache[chat_id] = InputChannel(
-            channel_id=peer.channel_id,
-            access_hash=peer.access_hash
+async def get_input_peer(client, chat_id):
+    if chat_id not in peer_cache:
+        peer_cache[chat_id] = await client.resolve_peer(chat_id)
+    return peer_cache[chat_id]
+
+
+async def post_comment(client, chat_id, reply_to_id):
+    await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+    try:
+        input_peer = await get_input_peer(client, chat_id)
+        await client.invoke(
+            raw.functions.messages.SendMessage(
+                peer=input_peer,
+                message=COMMENT_TEXT,
+                reply_to=InputReplyToMessage(reply_to_msg_id=reply_to_id),
+                random_id=random.randint(0, 2**63),
+                no_webpage=True,
+            )
         )
-    return channel_cache[chat_id]
+        print(f"[✅ COMMENT] {chat_id} → {reply_to_id}")
+        
+        # ارسال لینک کامنت به ادمین
+        try:
+            await client.send_message(ADMIN_USERNAME, f"کامنت گذاشته شد:\nhttps://t.me/c/{abs(chat_id)}/{reply_to_id}")
+        except:
+            pass
+            
+    except Exception as e:
+        print(f"[COMMENT ERROR] {e}")
+        sent_for.discard(reply_to_id)
 
 
 @app.on_raw_update()
 async def ultra_fast(client, update, users, chats):
     global MY_USER_ID
 
-    if not isinstance(update, raw.types.UpdateNewChannelMessage):
+    if not isinstance(update, UpdateNewChannelMessage):
         return
 
     msg = update.message
@@ -50,11 +77,21 @@ async def ultra_fast(client, update, users, chats):
         return
 
     chat_id = -(1_000_000_000_000 + peer.channel_id)
-    if chat_id not in TARGET_CHATS:
+
+    # ======================== کامنت ========================
+    if chat_id in COMMENT_GROUPS:
+        fwd = getattr(msg, "fwd_from", None)
+        if fwd and isinstance(getattr(fwd, "from_id", None), PeerChannel):
+            if msg.id not in sent_for:
+                sent_for.add(msg.id)
+                asyncio.create_task(post_comment(client, chat_id, msg.id))
+            return
+
+    # ======================== دیلیت ========================
+    if chat_id not in DELETE_GROUPS:
         return
 
     is_mine = False
-
     if getattr(msg, "out", False):
         is_mine = True
     else:
@@ -83,16 +120,12 @@ async def ultra_fast(client, update, users, chats):
         return
 
     try:
-        input_channel = await get_input_channel(client, chat_id)
-        await client.invoke(
-            raw.functions.channels.DeleteMessages(
-                channel=input_channel,
-                id=[replied_id]
-            )
-        )
+        input_peer = await get_input_peer(client, chat_id)
+        await client.invoke(raw.functions.channels.DeleteMessages(channel=input_peer, id=[replied_id]))
         my_messages[chat_id].discard(replied_id)
+        print(f"[🗑️ DELETED] {chat_id} → {replied_id}")
     except Exception as e:
-        print(f"[ERROR] {e}")
+        print(f"[DELETE ERROR] {e}")
 
 
 app.run()
