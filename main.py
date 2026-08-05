@@ -107,10 +107,10 @@ async def target_is_mine(chat_id: int, message_id: int) -> bool:
 
 async def delete_now(chat_id: int, message_id: int):
     try:
-        _, channel = await get_channel_peers(chat_id)
+        peer, _ = await get_channel_peers(chat_id)
         await app.invoke(
             raw.functions.channels.DeleteMessages(
-                channel=channel,
+                channel=peer,
                 id=[message_id],
             )
         )
@@ -122,10 +122,10 @@ async def delete_now(chat_id: int, message_id: int):
         print(f"[DELETE FLOOD] wait={exc.value}s {chat_id}/{message_id}")
         await asyncio.sleep(exc.value + 1)
         try:
-            _, channel = await get_channel_peers(chat_id)
+            peer, _ = await get_channel_peers(chat_id)
             await app.invoke(
                 raw.functions.channels.DeleteMessages(
-                    channel=channel,
+                    channel=peer,
                     id=[message_id],
                 )
             )
