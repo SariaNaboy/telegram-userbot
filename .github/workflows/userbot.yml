@@ -18,8 +18,8 @@ jobs:
         run: |
           pip install pyrogram tgcrypto
 
-      - name: Run Userbot (1 hour)
-        run: timeout 3600 python -u main.py
+      - name: Run Userbot (4.5 hours)
+        run: timeout 16200 python -u main.py
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}

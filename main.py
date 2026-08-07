@@ -45,13 +45,11 @@ API_HASH = os.environ["API_HASH"]
 SESSION = os.environ["SESSION_STRING"]
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 
+# فقط چت‌هایی که با این سشن معتبرند (بقیه Peer id invalid می‌دادند)
 DELETE_GROUPS = {
-    -1002866597350,
-    -1003984885147,
     -1001596320253,
 }
 COMMENT_GROUPS = {
-    -1003984885147,
     -1001596320253,
 }
 
@@ -260,6 +258,9 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                     return
             except Exception as exc:
                 print(f"[WATCHER COUNT ERROR] {root_key}: {exc!r}", flush=True)
+                if "MSG_ID_INVALID" in repr(exc):
+                    waiting_roots.pop(root_key, None)
+                    return
             await asyncio.sleep(1)
 
         waiting_roots.pop(root_key, None)
@@ -545,7 +546,8 @@ async def poll_new_discussion_roots():
                             last_seen_group_message.get(chat_id, 0), item.id
                         )
                         fwd = getattr(item, "forward_from_chat", None)
-                        if fwd is not None and getattr(fwd, "id", None) in DISCUSSION_SOURCE_CHANNELS:
+                        if fwd is not None and getattr(fwd, "id", None) in DISCUSSION_SOURCE_CHANNELS \
+                                and getattr(item, "replies", None) is not None:
                             print(f"[POLL GROUP ROOT] {chat_id}/{item.id} fwd={fwd.id}", flush=True)
                             replies_obj = getattr(item, "replies", None)
                             reply_count = getattr(replies_obj, "replies", None) if replies_obj else None
