@@ -67,7 +67,7 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-COMMENT_TEXT = "🤔🤔🤔🤔"
+COMMENT_TEXT = "😑😑"
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "120"))
 OWN_MESSAGE_HISTORY_LIMIT = 1000
 COMMENT_RECOVERY_HISTORY_LIMIT = 1500
