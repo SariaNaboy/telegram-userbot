@@ -73,7 +73,7 @@ OWN_MESSAGE_HISTORY_LIMIT = 1000
 COMMENT_RECOVERY_HISTORY_LIMIT = 1500
 
 # ---- تنظیمات جدید ----
-SOURCE_POLL_INTERVAL = float(os.getenv("SOURCE_POLL_INTERVAL", "2.0"))
+SOURCE_POLL_INTERVAL = float(os.getenv("SOURCE_POLL_INTERVAL", "5.0"))
 COMMENT_IF_NO_REPLIES = os.getenv("COMMENT_IF_NO_REPLIES", "false").lower() in {"1", "true", "yes"}
 ENABLE_STARTUP_RECOVERY = os.getenv("ENABLE_STARTUP_RECOVERY", "true").lower() in {"1", "true", "yes"}
 DEBUG_UPDATES = os.getenv("DEBUG_UPDATES", "false").lower() in {"1", "true", "yes"}
@@ -84,7 +84,8 @@ class InputPrivacyKeyAbout(TLObject):
     """inputPrivacyKeyAbout#b66b4d6a = InputPrivacyKey;"""
     __slots__: List[str] = []
 
-    ID = 0xB66B4D6A
+    # ID درست طبق scheme رسمی تلگرام: inputPrivacyKeyAbout#3823cc40
+    ID = 0x3823CC40
     QUALNAME = "types.InputPrivacyKeyAbout"
 
     def __init__(self) -> None:
@@ -376,7 +377,10 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                 if "MSG_ID_INVALID" in repr(exc):
                     waiting_roots.pop(root_key, None)
                     return
-            await asyncio.sleep(1)
+                if "FLOOD_WAIT" in repr(exc):
+                    # وقتی flood آمد، همین مقدار صبر کن تا تلگرام آرام بگیرد
+                    await asyncio.sleep(5)
+            await asyncio.sleep(2)
 
         waiting_roots.pop(root_key, None)
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
