@@ -30,6 +30,9 @@ logging.basicConfig(
     format="%(levelname)s %(name)s: %(message)s",
 )
 
+from io import BytesIO
+from typing import List, Any
+
 from pyrogram import Client, filters, idle, raw
 from pyrogram.errors import FloodWait
 from pyrogram.raw.types import (
@@ -39,6 +42,8 @@ from pyrogram.raw.types import (
     InputChannel,
     UpdateNewChannelMessage,
 )
+from pyrogram.raw.core import TLObject
+from pyrogram.raw.core.primitives import Int
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -72,6 +77,37 @@ SOURCE_POLL_INTERVAL = float(os.getenv("SOURCE_POLL_INTERVAL", "2.0"))
 COMMENT_IF_NO_REPLIES = os.getenv("COMMENT_IF_NO_REPLIES", "false").lower() in {"1", "true", "yes"}
 ENABLE_STARTUP_RECOVERY = os.getenv("ENABLE_STARTUP_RECOVERY", "true").lower() in {"1", "true", "yes"}
 DEBUG_UPDATES = os.getenv("DEBUG_UPDATES", "false").lower() in {"1", "true", "yes"}
+
+# ===== تغییر هویت خودکار =====
+# pyrogram 2.0.106 تایپ inputPrivacyKeyAbout را ندارد؛ خودمان با ID درست می‌سازیم
+class InputPrivacyKeyAbout(TLObject):
+    """inputPrivacyKeyAbout#b66b4d6a = InputPrivacyKey;"""
+    __slots__: List[str] = []
+
+    ID = 0xB66B4D6A
+    QUALNAME = "types.InputPrivacyKeyAbout"
+
+    def __init__(self) -> None:
+        pass
+
+    @staticmethod
+    def read(b: BytesIO, *args: Any) -> "InputPrivacyKeyAbout":
+        return InputPrivacyKeyAbout()
+
+    def write(self, *args: Any) -> bytes:
+        b = BytesIO()
+        b.write(Int(self.ID, False))
+        return b.getvalue()
+
+
+PROFILE_AMIRALI_NAME = "AmirAli"
+PROFILE_AMIRALI_USERNAME = "Amirali126868"
+PROFILE_MAYA_NAME = "Maya"
+PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
+PROFILE_REVERT_SECONDS = 1800       # ۳۰ دقیقه بعد از آخرین پست بدون پست جدید
+
+last_post_detected = None           # time.monotonic() آخرین باری که پست جدید دیدیم
+profile_mode = "maya"               # "maya" یا "amirali"
 
 app = Client(
     "userbot",
@@ -109,6 +145,77 @@ async def notify_admin(text: str):
         print("[ADMIN NOTIFIED]", flush=True)
     except Exception as exc:
         print(f"[ADMIN NOTIFY ERROR] {exc!r}", flush=True)
+
+
+async def set_privacy_rule(key, allow_all: bool):
+    rule = (
+        raw.types.InputPrivacyValueAllowAll()
+        if allow_all
+        else raw.types.InputPrivacyValueDisallowAll()
+    )
+    return await app.invoke(
+        raw.functions.account.SetPrivacy(key=key, rules=[rule])
+    )
+
+
+async def apply_profile_amirali():
+    """هویت AmirAli: نام + یوزرنیم + مخفی‌کردن عکس و بیو از همه."""
+    global profile_mode
+    try:
+        await app.update_profile(first_name=PROFILE_AMIRALI_NAME)
+        try:
+            await app.set_username(PROFILE_AMIRALI_USERNAME)
+        except Exception as exc:
+            print(f"[USERNAME SET ERROR (AmirAli)] {exc!r}", flush=True)
+        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
+        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
+        profile_mode = "amirali"
+        print(
+            "[PROFILE -> AmirAli] name=AmirAli username=@Amirali126868 "
+            "photo=hidden bio=hidden",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[PROFILE AMIRALI ERROR] {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
+async def apply_profile_maya():
+    """هویت Maya: نام + بدون یوزرنیم + نمایش عکس و بیو برای همه."""
+    global profile_mode
+    try:
+        await app.update_profile(first_name=PROFILE_MAYA_NAME)
+        try:
+            await app.set_username(PROFILE_MAYA_USERNAME)
+        except Exception as exc:
+            print(f"[USERNAME REMOVE ERROR (Maya)] {exc!r}", flush=True)
+        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
+        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=True)
+        profile_mode = "maya"
+        print(
+            "[PROFILE -> Maya] name=Maya username=none photo=public bio=public",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[PROFILE MAYA ERROR] {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
+async def profile_watchdog():
+    """اگر ۳۰ دقیقه از آخرین پست گذشت و پست جدیدی نیامد، به Maya برمی‌گردد."""
+    global profile_mode
+    while True:
+        try:
+            if (
+                profile_mode == "amirali"
+                and last_post_detected is not None
+                and time.monotonic() - last_post_detected >= PROFILE_REVERT_SECONDS
+            ):
+                print("[PROFILE TIMER] ۳۰ دقیقه بدون پست جدید -> بازگشت به Maya", flush=True)
+                await apply_profile_maya()
+        except Exception as exc:
+            print(f"[PROFILE WATCHDOG ERROR] {exc!r}", flush=True)
+        await asyncio.sleep(10)
 
 
 async def get_channel_peers(chat_id: int):
@@ -184,6 +291,7 @@ async def delete_now(chat_id: int, message_id: int):
 
 async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """Send one reply to a discussion root. The caller must reserve the root first."""
+    global last_post_detected
     try:
         peer, _ = await get_channel_peers(chat_id)
         print(
@@ -210,6 +318,13 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             "کامنت ثبت شد:\n"
             f"https://t.me/c/{internal_id}/{root_message_id}"
         ))
+
+        # تغییر هویت به AmirAli + ریست تایمر «آخرین پست»
+        last_post_detected = time.monotonic()
+        if profile_mode != "amirali":
+            asyncio.create_task(apply_profile_amirali())
+        else:
+            print("[PROFILE] already AmirAli — timer reset", flush=True)
     except FloodWait as exc:
         print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}", flush=True)
     except Exception as exc:
@@ -275,6 +390,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
 
 async def observe_channel_post_discussion(source_chat_id: int, source_message_id: int):
     """Map a source-channel post to its linked discussion-group root."""
+    global last_post_detected
     try:
         if not hasattr(app, "get_discussion_message"):
             print(
@@ -302,6 +418,7 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
             f"root={discussion_chat_id}/{discussion_root.id}",
             flush=True,
         )
+        last_post_detected = time.monotonic()
         await observe_discussion_root(
             discussion_chat_id,
             discussion_root.id,
@@ -319,9 +436,12 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
 
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
     """Common root entry point used by high-level, raw and polling handlers."""
+    global last_post_detected
     root_key = (chat_id, root_message_id)
     if root_key in comment_attempted or root_key in thread_watchers:
         return
+
+    last_post_detected = time.monotonic()
 
     print(
         f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
@@ -652,6 +772,7 @@ async def main():
         # ---- شروع پولینگ فعال ----
         asyncio.create_task(poll_new_channel_posts())
         asyncio.create_task(poll_new_discussion_roots())
+        asyncio.create_task(profile_watchdog())
 
         if ENABLE_STARTUP_RECOVERY:
             for chat_id in COMMENT_GROUPS:
