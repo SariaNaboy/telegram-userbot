@@ -20,6 +20,7 @@ import os
 import time
 import asyncio
 import secrets
+import random
 import traceback
 import logging
 from collections import defaultdict
@@ -67,13 +68,26 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-COMMENT_TEXT = "😑😑"
+# کامنت‌های متنوع (به‌جای یک متن تکراری — کاهش سیگنال اسپم)
+COMMENT_TEXTS = [
+    "😑😑",
+    "😐😐",
+    "🤐🤐",
+    "🫠🫠",
+    "🫤🫤",
+]
+# احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.75"))
+# سقف کامنت در هر ساعت (محافظ ضداسپم؛ با env قابل تغییر)
+MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "6"))
+
+comment_sent_times = []   # timestamps کامنت‌های ارسال‌شده
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "120"))
 OWN_MESSAGE_HISTORY_LIMIT = 1000
 COMMENT_RECOVERY_HISTORY_LIMIT = 1500
 
 # ---- تنظیمات جدید ----
-SOURCE_POLL_INTERVAL = float(os.getenv("SOURCE_POLL_INTERVAL", "5.0"))
+SOURCE_POLL_INTERVAL = float(os.getenv("SOURCE_POLL_INTERVAL", "15.0"))
 COMMENT_IF_NO_REPLIES = os.getenv("COMMENT_IF_NO_REPLIES", "false").lower() in {"1", "true", "yes"}
 ENABLE_STARTUP_RECOVERY = os.getenv("ENABLE_STARTUP_RECOVERY", "true").lower() in {"1", "true", "yes"}
 DEBUG_UPDATES = os.getenv("DEBUG_UPDATES", "false").lower() in {"1", "true", "yes"}
@@ -303,7 +317,7 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
         result = await app.invoke(
             raw.functions.messages.SendMessage(
                 peer=peer,
-                message=COMMENT_TEXT,
+                message=random.choice(COMMENT_TEXTS),
                 random_id=secrets.randbits(63),
                 reply_to_msg_id=root_message_id,
                 no_webpage=True,
@@ -333,14 +347,42 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
         print(traceback.format_exc(), flush=True)
 
 
+def comments_in_last_hour() -> int:
+    now = time.monotonic()
+    while comment_sent_times and now - comment_sent_times[0] > 3600:
+        comment_sent_times.pop(0)
+    return len(comment_sent_times)
+
+
 async def reserve_and_send_comment(chat_id: int, root_message_id: int, reason: str):
     """Atomically reserve a root in this process, then send exactly once."""
     root_key = (chat_id, root_message_id)
     if root_key in comment_attempted:
         return False
 
+    # حتی اگر کامنت نگذاریم، ریشه را علامت‌گذاری می‌کنیم که دوباره تلاش نشود
     comment_attempted.add(root_key)
     waiting_roots.pop(root_key, None)
+
+    # شانس ۷۵٪: اگر نیفتاد، این پست عمداً بدون کامنت می‌ماند
+    if random.random() > COMMENT_CHANCE:
+        print(
+            f"[COMMENT SKIPPED (chance)] {root_key} reason={reason} "
+            f"chance={COMMENT_CHANCE}",
+            flush=True,
+        )
+        return False
+
+    # سقف ساعتی: اگر زیاد کامنت گذاشتیم، فعلاً نگذاریم
+    if comments_in_last_hour() >= MAX_COMMENTS_PER_HOUR:
+        print(
+            f"[COMMENT SKIPPED (rate-limit)] {root_key} "
+            f"already {MAX_COMMENTS_PER_HOUR}/hour",
+            flush=True,
+        )
+        return False
+
+    comment_sent_times.append(time.monotonic())
     print(f"[COMMENT RESERVED] {root_key} reason={reason}", flush=True)
     await send_comment_after_external_reply(chat_id, root_message_id)
     return True
