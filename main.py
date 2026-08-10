@@ -78,6 +78,14 @@ COMMENT_TEXTS = [
 ]
 # احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.75"))
+
+# نوتیفیکیشن ادمین: با تأخیر رندوم ۲-۵ دقیقه و بدون لینک
+ADMIN_NOTIFY_MIN_DELAY = int(os.getenv("ADMIN_NOTIFY_MIN_DELAY", "120"))   # 2 دقیقه
+ADMIN_NOTIFY_MAX_DELAY = int(os.getenv("ADMIN_NOTIFY_MAX_DELAY", "300"))   # 5 دقیقه
+ADMIN_NOTIFY_WORDS = [
+    "شد", "ثبت", "انجام", "اوکی", "رفت",
+    "تمام", "کامنت", "حله", "گرفت", "شد شد",
+]
 # سقف کامنت در هر ساعت (محافظ ضداسپم؛ با env قابل تغییر)
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "6"))
 
@@ -160,6 +168,17 @@ async def notify_admin(text: str):
         print("[ADMIN NOTIFIED]", flush=True)
     except Exception as exc:
         print(f"[ADMIN NOTIFY ERROR] {exc!r}", flush=True)
+
+
+async def notify_admin_delayed():
+    """بعد از تأخیر رندوم ۲-۵ دقیقه، فقط یک کلمه به ادمین می‌فرستد (بدون لینک)."""
+    try:
+        delay = random.randint(ADMIN_NOTIFY_MIN_DELAY, ADMIN_NOTIFY_MAX_DELAY)
+        print(f"[ADMIN NOTIFY SCHEDULED] in {delay}s", flush=True)
+        await asyncio.sleep(delay)
+        await notify_admin(random.choice(ADMIN_NOTIFY_WORDS))
+    except Exception as exc:
+        print(f"[ADMIN NOTIFY DELAYED ERROR] {exc!r}", flush=True)
 
 
 async def set_privacy_rule(key, allow_all: bool):
@@ -328,11 +347,7 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             f"updates_type={type(result).__name__}",
             flush=True,
         )
-        internal_id = str(chat_id)[4:] if str(chat_id).startswith("-100") else str(abs(chat_id))
-        asyncio.create_task(notify_admin(
-            "کامنت ثبت شد:\n"
-            f"https://t.me/c/{internal_id}/{root_message_id}"
-        ))
+        asyncio.create_task(notify_admin_delayed())
 
         # تغییر هویت به AmirAli + ریست تایمر «آخرین پست»
         last_post_detected = time.monotonic()
