@@ -90,6 +90,7 @@ ADMIN_NOTIFY_WORDS = [
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "6"))
 
 comment_sent_times = []   # timestamps کامنت‌های ارسال‌شده
+my_last_comment = None   # (chat_id, message_id) آخرین کامنتی که فرستادیم — با پست بعدی پاک می‌شود
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "120"))
 OWN_MESSAGE_HISTORY_LIMIT = 1000
 COMMENT_RECOVERY_HISTORY_LIMIT = 1500
@@ -303,6 +304,18 @@ async def target_is_mine(chat_id: int, message_id: int) -> bool:
     return mine
 
 
+def extract_sent_msg_id(result):
+    """message id پیامی که تازه فرستادیم را از پاسخ raw استخراج می‌کند."""
+    for u in getattr(result, "updates", []) or []:
+        if isinstance(u, raw.types.UpdateMessageID):
+            return u.id
+        if isinstance(u, raw.types.UpdateNewChannelMessage):
+            m = u.message
+            if isinstance(m, raw.types.Message):
+                return m.id
+    return None
+
+
 async def delete_now(chat_id: int, message_id: int):
     try:
         peer, _ = await get_channel_peers(chat_id)
@@ -325,7 +338,7 @@ async def delete_now(chat_id: int, message_id: int):
 
 async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """Send one reply to a discussion root. The caller must reserve the root first."""
-    global last_post_detected
+    global last_post_detected, my_last_comment
     try:
         peer, _ = await get_channel_peers(chat_id)
         print(
@@ -347,6 +360,10 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             f"updates_type={type(result).__name__}",
             flush=True,
         )
+        sent_id = extract_sent_msg_id(result)
+        if sent_id:
+            my_last_comment = (chat_id, sent_id)
+            print(f"[LAST COMMENT TRACKED] chat={chat_id} msg={sent_id}", flush=True)
         asyncio.create_task(notify_admin_delayed())
 
         # تغییر هویت به AmirAli + ریست تایمر «آخرین پست»
@@ -497,12 +514,19 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
 
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
     """Common root entry point used by high-level, raw and polling handlers."""
-    global last_post_detected
+    global last_post_detected, my_last_comment
     root_key = (chat_id, root_message_id)
     if root_key in comment_attempted or root_key in thread_watchers:
         return
 
     last_post_detected = time.monotonic()
+
+    # پاک کردن کامنت قبلی (هر پست جدید؛ چه کامنت بگذاریم چه نگذاریم)
+    if my_last_comment is not None:
+        old_chat, old_msg = my_last_comment
+        my_last_comment = None
+        print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
+        asyncio.create_task(delete_now(old_chat, old_msg))
 
     print(
         f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
