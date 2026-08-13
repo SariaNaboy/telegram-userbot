@@ -75,6 +75,7 @@ COMMENT_TEXTS = [
     "🤐🤐",
     "🫠🫠",
     "🫤🫤",
+    "😕😕",
 ]
 # احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.75"))
@@ -124,7 +125,7 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "AmirAli"
+PROFILE_AMIRALI_NAME = "⒜⒨⒤⒭⒜⒧⒤"
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
