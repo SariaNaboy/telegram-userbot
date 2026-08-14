@@ -89,7 +89,7 @@ COMMENT_WEIGHTS = [
     3,  # حق — شانس ۳ برابر بقیه
 ]
 # احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
-COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.75"))
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.85"))
 
 # نوتیفیکیشن ادمین: با تأخیر رندوم ۲-۵ دقیقه و بدون لینک
 ADMIN_NOTIFY_MIN_DELAY = int(os.getenv("ADMIN_NOTIFY_MIN_DELAY", "120"))   # 2 دقیقه
