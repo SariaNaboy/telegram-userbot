@@ -102,7 +102,8 @@ ADMIN_NOTIFY_WORDS = [
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "6"))
 
 comment_sent_times = []   # timestamps کامنت‌های ارسال‌شده
-my_last_comment = None   # (chat_id, message_id) آخرین کامنتی که فرستادیم — با پست بعدی پاک می‌شود
+my_comments = []         # لیست (chat_id, message_id) کامنت‌هایی که فرستادیم — با پست بعدی همه پاک می‌شوند
+MAX_TRACKED_COMMENTS = 5  # حداکثر تعداد کامنت برای ردیابی (قدیمی‌ترها خارج می‌شوند)
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "120"))
 OWN_MESSAGE_HISTORY_LIMIT = 1000
 COMMENT_RECOVERY_HISTORY_LIMIT = 1500
@@ -350,7 +351,7 @@ async def delete_now(chat_id: int, message_id: int):
 
 async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """Send one reply to a discussion root. The caller must reserve the root first."""
-    global last_post_detected, my_last_comment
+    global last_post_detected, my_comments
     try:
         peer, _ = await get_channel_peers(chat_id)
         print(
@@ -374,8 +375,10 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
         )
         sent_id = extract_sent_msg_id(result)
         if sent_id:
-            my_last_comment = (chat_id, sent_id)
-            print(f"[LAST COMMENT TRACKED] chat={chat_id} msg={sent_id}", flush=True)
+            my_comments.append((chat_id, sent_id))
+            # فقط آخرین MAX_TRACKED_COMMENTS را نگه می‌داریم
+            del my_comments[:-MAX_TRACKED_COMMENTS]
+            print(f"[COMMENT TRACKED] chat={chat_id} msg={sent_id} total={len(my_comments)}", flush=True)
         asyncio.create_task(notify_admin_delayed())
 
         # تغییر هویت به AmirAli + ریست تایمر «آخرین پست»
@@ -526,19 +529,20 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
 
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
     """Common root entry point used by high-level, raw and polling handlers."""
-    global last_post_detected, my_last_comment
+    global last_post_detected, my_comments
     root_key = (chat_id, root_message_id)
     if root_key in comment_attempted or root_key in thread_watchers:
         return
 
     last_post_detected = time.monotonic()
 
-    # پاک کردن کامنت قبلی (هر پست جدید؛ چه کامنت بگذاریم چه نگذاریم)
-    if my_last_comment is not None:
-        old_chat, old_msg = my_last_comment
-        my_last_comment = None
-        print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
-        asyncio.create_task(delete_now(old_chat, old_msg))
+    # پاک کردن همهٔ کامنت‌های قبلی (هر پست جدید؛ چه کامنت بگذاریم چه نگذاریم)
+    if my_comments:
+        to_delete = list(my_comments)
+        my_comments.clear()
+        for old_chat, old_msg in to_delete:
+            print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
+            asyncio.create_task(delete_now(old_chat, old_msg))
 
     print(
         f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
@@ -833,6 +837,30 @@ async def recover_recent_discussion_root(chat_id: int):
         print(traceback.format_exc(), flush=True)
 
 
+async def recover_my_recent_comments(chat_id: int):
+    """در استارت، آخرین کامنت‌های خودمان را در گروه پیدا می‌کند تا با پست بعدی پاک شوند."""
+    global my_comments
+    try:
+        found = 0
+        async for item in app.get_chat_history(chat_id, limit=200):
+            is_mine = bool(getattr(item, "outgoing", False)) or (
+                getattr(item, "from_user", None) is not None
+                and item.from_user.id == MY_USER_ID
+            )
+            if is_mine and item.reply_to_message_id is not None:
+                my_comments.append((chat_id, item.id))
+                found += 1
+                if found >= MAX_TRACKED_COMMENTS:
+                    break
+        if found:
+            print(f"[RECOVERED MY COMMENTS] chat={chat_id} count={found}", flush=True)
+        else:
+            print(f"[NO MY COMMENTS FOUND] chat={chat_id}", flush=True)
+    except Exception as exc:
+        print(f"[RECOVER MY COMMENTS ERROR] {chat_id}: {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
 async def main():
     global MY_USER_ID
     async with app:
@@ -874,6 +902,10 @@ async def main():
         if ENABLE_STARTUP_RECOVERY:
             for chat_id in COMMENT_GROUPS:
                 await recover_recent_discussion_root(chat_id)
+
+        # بازیابی کامنت‌های قبلی خودمان (تا با اولین پست جدید پاک شوند)
+        for chat_id in COMMENT_GROUPS:
+            await recover_my_recent_comments(chat_id)
 
         for chat_id in DELETE_GROUPS:
             await index_recent_own_messages(chat_id)
