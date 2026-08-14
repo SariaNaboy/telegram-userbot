@@ -69,6 +69,7 @@ TRIGGER_WORDS = {
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
 # کامنت‌های متنوع (به‌جای یک متن تکراری — کاهش سیگنال اسپم)
+# کامنت‌ها: (متن, وزن) — «حق» وزن بیشتر دارد و بیشتر انتخاب می‌شود
 COMMENT_TEXTS = [
     "😑😑",
     "😐😐",
@@ -76,6 +77,16 @@ COMMENT_TEXTS = [
     "🫠🫠",
     "🫤🫤",
     "😕😕",
+    "حق",
+]
+COMMENT_WEIGHTS = [
+    1,  # 😑😑
+    1,  # 😐😐
+    1,  # 🤐🤐
+    1,  # 🫠🫠
+    1,  # 🫤🫤
+    1,  # 😕😕
+    3,  # حق — شانس ۳ برابر بقیه
 ]
 # احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.75"))
@@ -350,7 +361,7 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
         result = await app.invoke(
             raw.functions.messages.SendMessage(
                 peer=peer,
-                message=random.choice(COMMENT_TEXTS),
+                message=random.choices(COMMENT_TEXTS, weights=COMMENT_WEIGHTS, k=1)[0],
                 random_id=secrets.randbits(63),
                 reply_to_msg_id=root_message_id,
                 no_webpage=True,
