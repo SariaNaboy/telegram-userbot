@@ -3,7 +3,9 @@
 bot2 — ربات دوم (روی همان Actions ولی با اکانت/محل/متن متفاوت)
 
 - فقط روی پست‌هایی که متنشان شامل کلمهٔ «تجربه» است کامنت می‌گذارد
-- ۱۰ ثانیه بعد از تشخیص (تأخیر انسانی) کامنت 🫠🫠 را روی ریشهٔ بحث می‌گذارد
+- بلافاصله (بدون تأخیر) کامنت 🫠🫠 را روی ریشهٔ بحث می‌گذارد
+- بعد از کامنت، هویت اکانت به AmirAli می‌رود (اسم/یوزرنیم/پرایوسی)
+- بعد از ۳۰ دقیقه بدون پست جدید، به Maya برمی‌گردد
 - پولینگ فعال + fallback پوش + مدیریت FloodWait (پست هیچ‌وقت گم نمی‌شود)
 """
 import os
@@ -13,6 +15,8 @@ import secrets
 import random
 import traceback
 import logging
+from io import BytesIO
+from typing import List, Any
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -24,18 +28,49 @@ from pyrogram.raw.types import (
     InputChannel,
     UpdateNewChannelMessage,
 )
+from pyrogram.raw.core import TLObject
+from pyrogram.raw.core.primitives import Int
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION = os.environ["SESSION_STRING"]
 
 # ===== کانفیگ ربات دوم =====
-SOURCE_CHANNELS = {-1002061774069}        # کانال: 2061774069
-COMMENT_GROUPS = {-1002118429464}         # گروه:  2118429464
+SOURCE_CHANNELS = {-1001567510958}        # کانال جدید: 1567510958
+COMMENT_GROUPS = {-1002129187025}         # گروه جدید:  2129187025
 TRIGGER_WORD = "تجربه"                     # فقط این کلمه
 COMMENT_TEXT = "🫠🫠"
-DELAY_SECONDS = int(os.getenv("DELAY_SECONDS", "10"))   # تأخیر قبل از کامنت
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
+
+# ===== هویت خودکار (همانند main.py) =====
+class InputPrivacyKeyAbout(TLObject):
+    """inputPrivacyKeyAbout#3823cc40 = InputPrivacyKey;"""
+    __slots__: List[str] = []
+
+    ID = 0x3823CC40
+    QUALNAME = "types.InputPrivacyKeyAbout"
+
+    def __init__(self) -> None:
+        pass
+
+    @staticmethod
+    def read(b: BytesIO, *args: Any) -> "InputPrivacyKeyAbout":
+        return InputPrivacyKeyAbout()
+
+    def write(self, *args: Any) -> bytes:
+        b = BytesIO()
+        b.write(Int(self.ID, False))
+        return b.getvalue()
+
+
+PROFILE_AMIRALI_NAME = "⒜⒨⒤⒭⒜⒧⒤"
+PROFILE_AMIRALI_USERNAME = "Amirali126868"
+PROFILE_MAYA_NAME = "Maya"
+PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
+PROFILE_REVERT_SECONDS = 1800       # ۳۰ دقیقه بعد از آخرین پست بدون پست جدید
+
+last_post_detected = None           # time.monotonic() آخرین باری که پست جدید دیدیم
+profile_mode = "maya"               # "maya" یا "amirali"
 
 app = Client(
     "bot2",
@@ -68,6 +103,77 @@ async def get_channel_peers(chat_id: int):
     return peer, channel
 
 
+async def set_privacy_rule(key, allow_all: bool):
+    rule = (
+        raw.types.InputPrivacyValueAllowAll()
+        if allow_all
+        else raw.types.InputPrivacyValueDisallowAll()
+    )
+    return await app.invoke(
+        raw.functions.account.SetPrivacy(key=key, rules=[rule])
+    )
+
+
+async def apply_profile_amirali():
+    """هویت AmirAli: نام + یوزرنیم + مخفی‌کردن عکس و بیو از همه."""
+    global profile_mode
+    try:
+        await app.update_profile(first_name=PROFILE_AMIRALI_NAME)
+        try:
+            await app.set_username(PROFILE_AMIRALI_USERNAME)
+        except Exception as exc:
+            print(f"[USERNAME SET ERROR (AmirAli)] {exc!r}", flush=True)
+        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
+        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
+        profile_mode = "amirali"
+        print(
+            "[PROFILE -> AmirAli] name=⒜⒨⒤⒭⒜⒧⒤ username=@Amirali126868 "
+            "photo=hidden bio=hidden",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[PROFILE AMIRALI ERROR] {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
+async def apply_profile_maya():
+    """هویت Maya: نام + بدون یوزرنیم + نمایش عکس و بیو برای همه."""
+    global profile_mode
+    try:
+        await app.update_profile(first_name=PROFILE_MAYA_NAME)
+        try:
+            await app.set_username(PROFILE_MAYA_USERNAME)
+        except Exception as exc:
+            print(f"[USERNAME REMOVE ERROR (Maya)] {exc!r}", flush=True)
+        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
+        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=True)
+        profile_mode = "maya"
+        print(
+            "[PROFILE -> Maya] name=Maya username=none photo=public bio=public",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[PROFILE MAYA ERROR] {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
+
+
+async def profile_watchdog():
+    """اگر ۳۰ دقیقه از آخرین پست گذشت و پست جدیدی نیامد، به Maya برمی‌گردد."""
+    global profile_mode
+    while True:
+        try:
+            if (
+                profile_mode == "amirali"
+                and last_post_detected is not None
+                and time.monotonic() - last_post_detected >= PROFILE_REVERT_SECONDS
+            ):
+                print("[PROFILE TIMER] ۳۰ دقیقه بدون پست جدید -> بازگشت به Maya", flush=True)
+                await apply_profile_maya()
+        except Exception as exc:
+            print(f"[PROFILE WATCHDOG ERROR] {exc!r}", flush=True)
+        await asyncio.sleep(10)
+
+
 async def get_post_text(item):
     """متن پیام (شامل کپشن مدیا) را برمی‌گرداند."""
     for attr in ("text", "caption"):
@@ -79,6 +185,7 @@ async def get_post_text(item):
 
 async def map_to_root(source_chat_id: int, source_message_id: int):
     """پست کانال را به ریشهٔ بحث در گروه وصل می‌کند (با FloodWait retry)."""
+    global last_post_detected
     key = (source_chat_id, source_message_id)
     now = time.monotonic()
     if key in recently_mapped and now - recently_mapped[key] < 120:
@@ -123,12 +230,14 @@ async def map_to_root(source_chat_id: int, source_message_id: int):
         return True
 
     commented_posts.add(root_key)
-    await asyncio.sleep(DELAY_SECONDS)  # تأخیر ۱۰ ثانیه‌ای
-    await send_comment(discussion_chat_id, root.id)
+    last_post_detected = time.monotonic()
+    ok = await send_comment(discussion_chat_id, root.id)
+    if ok and profile_mode != "amirali":
+        asyncio.create_task(apply_profile_amirali())
     return True
 
 
-async def send_comment(chat_id: int, root_message_id: int):
+async def send_comment(chat_id: int, root_message_id: int) -> bool:
     try:
         peer, _ = await get_channel_peers(chat_id)
         print(
@@ -150,6 +259,7 @@ async def send_comment(chat_id: int, root_message_id: int):
             f"type={type(result).__name__}",
             flush=True,
         )
+        return True
     except FloodWait as exc:
         print(f"[COMMENT FLOOD] wait={exc.value}s", flush=True)
         await asyncio.sleep(exc.value + 1)
@@ -165,15 +275,19 @@ async def send_comment(chat_id: int, root_message_id: int):
                 )
             )
             print(f"[COMMENT SENT AFTER FLOOD] chat={chat_id} root={root_message_id}", flush=True)
+            return True
         except Exception as retry_exc:
             print(f"[COMMENT RETRY ERROR] {chat_id}/{root_message_id}: {retry_exc!r}", flush=True)
+            return False
     except Exception as exc:
         print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
+        return False
 
 
 async def poll_source_channels():
     """هر POLL_INTERVAL ثانیه کانال را می‌پرسد؛ پست‌های جدیدِ دارای «تجربه» را کامنت می‌کند."""
+    global last_post_detected
     while True:
         try:
             for chat_id in SOURCE_CHANNELS:
@@ -190,6 +304,7 @@ async def poll_source_channels():
                                 f"text={text[:60]!r}",
                                 flush=True,
                             )
+                            last_post_detected = time.monotonic()
                             ok = await map_to_root(chat_id, item.id)
                             if not ok:
                                 print(
@@ -215,6 +330,7 @@ async def poll_source_channels():
 
 @app.on_raw_update()
 async def on_raw_update(client, update, users, chats):
+    global last_post_detected
     if not isinstance(update, UpdateNewChannelMessage):
         return
     message = update.message
@@ -237,6 +353,7 @@ async def on_raw_update(client, update, users, chats):
         return
     print(f"[RAW TRIGGER] {chat_id}/{message_id}", flush=True)
     last_seen_channel_post[chat_id] = max(last_seen_channel_post.get(chat_id, 0), message_id)
+    last_post_detected = time.monotonic()
     asyncio.create_task(map_to_root(chat_id, message_id))
 
 
@@ -262,6 +379,7 @@ async def main():
                 print(f"[PREWARM ERROR] {cid}: {exc!r}", flush=True)
 
         asyncio.create_task(poll_source_channels())
+        asyncio.create_task(profile_watchdog())
         print("[BOT2 STARTED]", flush=True)
         await asyncio.Event().wait()
 
