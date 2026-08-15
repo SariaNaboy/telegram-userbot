@@ -2,7 +2,7 @@
 """
 bot2 — ربات دوم (روی همان Actions ولی با اکانت/محل/متن متفاوت)
 
-- فقط روی پست‌هایی که متنشان شامل کلمهٔ «تجربه» است کامنت می‌گذارد
+- روی همهٔ پست‌های کانال کامنت می‌گذارد (بدون حساسیت به کلمهٔ خاص)
 - بلافاصله (بدون تأخیر) کامنت 🫠🫠 را روی ریشهٔ بحث می‌گذارد
 - بعد از کامنت، هویت اکانت به AmirAli می‌رود (اسم/یوزرنیم/پرایوسی)
 - بعد از ۳۰ دقیقه بدون پست جدید، به Maya برمی‌گردد
@@ -298,26 +298,19 @@ async def poll_source_channels():
                             break
                         print(f"[NEW POST] {chat_id}/{item.id}", flush=True)
                         text = await get_post_text(item)
-                        if TRIGGER_WORD in text:
+                        print(
+                            f"[COMMENT ALL POSTS] {chat_id}/{item.id} "
+                            f"text={text[:50]!r}",
+                            flush=True,
+                        )
+                        last_post_detected = time.monotonic()
+                        ok = await map_to_root(chat_id, item.id)
+                        if not ok:
                             print(
-                                f"[TRIGGER FOUND] {chat_id}/{item.id} "
-                                f"text={text[:60]!r}",
+                                f"[DEFERRED] {chat_id}/{item.id} — retry next cycle",
                                 flush=True,
                             )
-                            last_post_detected = time.monotonic()
-                            ok = await map_to_root(chat_id, item.id)
-                            if not ok:
-                                print(
-                                    f"[DEFERRED] {chat_id}/{item.id} — retry next cycle",
-                                    flush=True,
-                                )
-                                break
-                        else:
-                            print(
-                                f"[NO TRIGGER] {chat_id}/{item.id} "
-                                f"text={text[:40]!r}",
-                                flush=True,
-                            )
+                            break
                         last_seen_channel_post[chat_id] = max(
                             last_seen_channel_post.get(chat_id, 0), item.id
                         )
@@ -342,10 +335,6 @@ async def on_raw_update(client, update, users, chats):
 
     chat_id = chat_id_from_channel_id(peer.channel_id)
     if chat_id not in SOURCE_CHANNELS:
-        return
-
-    msg_text = (getattr(message, "message", "") or "")
-    if TRIGGER_WORD not in msg_text:
         return
 
     message_id = message.id
