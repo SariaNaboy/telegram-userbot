@@ -54,18 +54,15 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 # فقط چت‌هایی که با این سشن معتبرند (بقیه Peer id invalid می‌دادند)
 DELETE_GROUPS = {
     -1001596320253,
-    -1001930293711,
 }
 COMMENT_GROUPS = {
     -1001596320253,
-    -1001930293711,
 }
 
 # Source channels whose post updates may arrive even when Telegram doesn't send
 # the automatic-forward update from the linked discussion group.
 DISCUSSION_SOURCE_CHANNELS = {
     -1001279727614,
-    -1001568689710,
 }
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
