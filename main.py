@@ -102,6 +102,7 @@ ADMIN_NOTIFY_WORDS = [
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "6"))
 
 comment_sent_times = []   # timestamps کامنت‌های ارسال‌شده
+recently_mapped = {}    # (chat_id, msg_id) -> time.monotonic() — جلوگیری از get_discussion_message تکراری
 my_comments = []         # لیست (chat_id, message_id) کامنت‌هایی که فرستادیم — با پست بعدی همه پاک می‌شوند
 MAX_TRACKED_COMMENTS = 5  # حداکثر تعداد کامنت برای ردیابی (قدیمی‌ترها خارج می‌شوند)
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "120"))
@@ -469,7 +470,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                 if "FLOOD_WAIT" in repr(exc):
                     # وقتی flood آمد، همین مقدار صبر کن تا تلگرام آرام بگیرد
                     await asyncio.sleep(5)
-            await asyncio.sleep(2)
+            await asyncio.sleep(4)
 
         waiting_roots.pop(root_key, None)
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
@@ -482,7 +483,11 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
 
 
 async def observe_channel_post_discussion(source_chat_id: int, source_message_id: int):
-    """Map a source-channel post to its linked discussion-group root."""
+    """Map a source-channel post to its linked discussion-group root.
+
+    Returns True on success (post fully handled), False if it should be retried
+    later (e.g. FloodWait) so the poll loop doesn't mark it as seen.
+    """
     global last_post_detected
     try:
         if not hasattr(app, "get_discussion_message"):
@@ -491,12 +496,32 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
                 "— run: pip install -U pyrogram",
                 flush=True,
             )
-            return
+            return False
 
-        discussion_root = await app.get_discussion_message(
-            source_chat_id,
-            source_message_id,
-        )
+        # ددپلیکیت: اگر همین پست را قبلاً در این فرآیند map کرده‌ایم، دوباره RPC نزن
+        key = (source_chat_id, source_message_id)
+        now = time.monotonic()
+        if key in recently_mapped and now - recently_mapped[key] < 120:
+            return True
+
+        try:
+            discussion_root = await app.get_discussion_message(
+                source_chat_id,
+                source_message_id,
+            )
+        except FloodWait as exc:
+            wait = exc.value + 1
+            print(
+                f"[DISCUSSION MAP FLOOD] source={source_chat_id}/{source_message_id} "
+                f"wait={wait}s — retrying",
+                flush=True,
+            )
+            await asyncio.sleep(wait)
+            discussion_root = await app.get_discussion_message(
+                source_chat_id,
+                source_message_id,
+            )
+
         discussion_chat_id = discussion_root.chat.id
         if discussion_chat_id not in COMMENT_GROUPS:
             print(
@@ -504,13 +529,15 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
                 f"discussion_chat={discussion_chat_id}",
                 flush=True,
             )
-            return
+            recently_mapped[key] = now
+            return True
 
         print(
             f"[DISCUSSION MAP] source={source_chat_id}/{source_message_id} "
             f"root={discussion_chat_id}/{discussion_root.id}",
             flush=True,
         )
+        recently_mapped[key] = now
         last_post_detected = time.monotonic()
         await observe_discussion_root(
             discussion_chat_id,
@@ -519,12 +546,20 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
             known_count=None,
             source="channel-post-map",
         )
+        return True
+    except FloodWait as exc:
+        # حتی بعد از retry flood ماند → بگذار چرخهٔ بعد دوباره تلاش کند
+        print(
+            f"[DISCUSSION MAP STILL FLOOD] source={source_chat_id}/{source_message_id}: {exc!r}",
+            flush=True,
+        )
+        return False
     except Exception as exc:
         print(
             f"[DISCUSSION MAP ERROR] source={source_chat_id}/{source_message_id}: {exc!r}",
             flush=True,
         )
-        print(traceback.format_exc(), flush=True)
+        return False
 
 
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
@@ -742,15 +777,19 @@ async def poll_new_channel_posts():
                         if item.id <= last:
                             break
                         print(f"[POLL NEW POST] {chat_id}/{item.id}", flush=True)
+                        ok = await observe_channel_post_discussion(chat_id, item.id)
+                        if not ok:
+                            # پردازش fail شد؛ last_seen را عوض نکن تا چرخهٔ بعد دوباره تلاش کند
+                            print(f"[POLL POST DEFERRED] {chat_id}/{item.id} — retry next cycle", flush=True)
+                            break
                         last_seen_channel_post[chat_id] = max(
                             last_seen_channel_post.get(chat_id, 0), item.id
                         )
-                        await observe_channel_post_discussion(chat_id, item.id)
                 except Exception as exc:
                     print(f"[POLL CHANNEL ERROR] {chat_id}: {exc!r}", flush=True)
         except Exception as exc:
             print(f"[POLL LOOP ERROR] {exc!r}", flush=True)
-        await asyncio.sleep(SOURCE_POLL_INTERVAL)
+        await asyncio.sleep(SOURCE_POLL_INTERVAL + random.uniform(0, 3))
 
 
 async def poll_new_discussion_roots():
@@ -779,7 +818,7 @@ async def poll_new_discussion_roots():
                     print(f"[POLL GROUP ERROR] {chat_id}: {exc!r}", flush=True)
         except Exception as exc:
             print(f"[POLL LOOP ERROR] {exc!r}", flush=True)
-        await asyncio.sleep(SOURCE_POLL_INTERVAL)
+        await asyncio.sleep(SOURCE_POLL_INTERVAL + random.uniform(0, 3))
 
 
 async def find_recent_active_discussion_root(chat_id: int):
