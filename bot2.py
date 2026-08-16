@@ -18,12 +18,14 @@ import traceback
 import logging
 from io import BytesIO
 from typing import List, Any
+from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
 from pyrogram.raw.types import (
+    PeerUser,
     PeerChannel,
     InputPeerChannel,
     InputChannel,
@@ -38,8 +40,13 @@ SESSION = os.environ["SESSION_STRING"]
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 
 # ===== کانفیگ ربات دوم =====
-SOURCE_CHANNELS = {-1001567510958}        # کانال: 1567510958
-COMMENT_GROUPS = {-1002129187025}         # گروه:  2129187025
+SOURCE_CHANNELS = {-1001985660752}        # کانال: 1985660752
+COMMENT_GROUPS = {-1002866597350, -1003984885147}   # گروه: 2866597350 + گروه تست: 3984885147
+DELETE_GROUPS = {-1002866597350, -1003984885147}    # همان گروه‌ها برای خود-حذفی
+TRIGGER_WORDS = {
+    "گزارش", "report", "@admin", "صیک", "سیک",
+    "اخطار", "بن", "سکوت", "ban", "mute",
+}
 COMMENT_TEXT = "🦦🦦"
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
@@ -87,6 +94,8 @@ thread_watchers = {}
 recently_mapped = {}
 last_post_detected = None
 profile_mode = "maya"
+MY_USER_ID = None
+my_messages = defaultdict(set)
 
 
 def chat_id_from_channel_id(channel_id: int) -> int:
@@ -103,6 +112,61 @@ async def get_channel_peers(chat_id: int):
     channel = InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash)
     peer_cache[chat_id] = (peer, channel)
     return peer, channel
+
+
+async def index_recent_own_messages(chat_id: int):
+    """در استارت، پیام‌های قبلی خودمان را در گروه می‌شمارد تا خود-حذفی کار کند."""
+    indexed = 0
+    try:
+        async for item in app.get_chat_history(chat_id, limit=500):
+            sender = getattr(item, "from_user", None)
+            if getattr(item, "outgoing", False) or (
+                sender is not None and sender.id == MY_USER_ID
+            ):
+                my_messages[chat_id].add(item.id)
+                indexed += 1
+        print(f"[OWN HISTORY INDEXED] chat={chat_id} messages={indexed}", flush=True)
+    except Exception as exc:
+        print(f"[OWN HISTORY INDEX ERROR] chat={chat_id}: {exc!r}", flush=True)
+
+
+async def target_is_mine(chat_id: int, message_id: int) -> bool:
+    if message_id in my_messages[chat_id]:
+        return True
+    try:
+        target = await app.get_messages(chat_id, message_id)
+    except Exception as exc:
+        print(f"[TARGET LOOKUP ERROR] {chat_id}/{message_id}: {exc!r}", flush=True)
+        return False
+    if not target or getattr(target, "empty", False):
+        return False
+    sender = getattr(target, "from_user", None)
+    mine = bool(getattr(target, "outgoing", False)) or (
+        sender is not None and sender.id == MY_USER_ID
+    )
+    if mine:
+        my_messages[chat_id].add(message_id)
+    return mine
+
+
+async def delete_now(chat_id: int, message_id: int):
+    try:
+        peer, _ = await get_channel_peers(chat_id)
+        await app.invoke(raw.functions.channels.DeleteMessages(channel=peer, id=[message_id]))
+        my_messages[chat_id].discard(message_id)
+        print(f"[DELETED] {chat_id}/{message_id}", flush=True)
+    except FloodWait as exc:
+        print(f"[DELETE FLOOD] wait={exc.value}s {chat_id}/{message_id}", flush=True)
+        await asyncio.sleep(exc.value + 1)
+        try:
+            peer, _ = await get_channel_peers(chat_id)
+            await app.invoke(raw.functions.channels.DeleteMessages(channel=peer, id=[message_id]))
+            my_messages[chat_id].discard(message_id)
+            print(f"[DELETED AFTER FLOOD] {chat_id}/{message_id}", flush=True)
+        except Exception as retry_exc:
+            print(f"[DELETE RETRY ERROR] {chat_id}/{message_id}: {retry_exc!r}", flush=True)
+    except Exception as exc:
+        print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}", flush=True)
 
 
 async def notify_admin(text: str):
@@ -354,21 +418,59 @@ async def on_raw_update(client, update, users, chats):
     peer = getattr(message, "peer_id", None)
     if not isinstance(peer, PeerChannel):
         return
+
     chat_id = chat_id_from_channel_id(peer.channel_id)
-    if chat_id not in SOURCE_CHANNELS:
-        return
     message_id = message.id
-    if message_id <= last_seen_channel_post.get(chat_id, 0):
-        return
-    print(f"[RAW POST] {chat_id}/{message_id}", flush=True)
-    last_seen_channel_post[chat_id] = max(last_seen_channel_post.get(chat_id, 0), message_id)
-    last_post_detected = time.monotonic()
-    asyncio.create_task(observe_channel_post_discussion(chat_id, message_id))
+    is_outgoing = bool(getattr(message, "out", False))
+    text = (getattr(message, "message", "") or "")
+
+    try:
+        # ---- رصد پست‌های کانال (کامنت 🦦🦦) ----
+        if chat_id in SOURCE_CHANNELS:
+            if message_id > last_seen_channel_post.get(chat_id, 0):
+                print(f"[RAW POST] {chat_id}/{message_id}", flush=True)
+                last_seen_channel_post[chat_id] = max(last_seen_channel_post.get(chat_id, 0), message_id)
+                last_post_detected = time.monotonic()
+                asyncio.create_task(observe_channel_post_discussion(chat_id, message_id))
+
+        # ---- خود-حذفی: اگر کسی با کلمه تریگر به پیام ما ریپلی کرد، پاک کن ----
+        if chat_id not in DELETE_GROUPS:
+            return
+
+        from_id = getattr(message, "from_id", None)
+        mine = is_outgoing or (
+            isinstance(from_id, PeerUser)
+            and MY_USER_ID is not None
+            and from_id.user_id == MY_USER_ID
+        )
+        if mine:
+            my_messages[chat_id].add(message_id)
+            print(f"[MY MESSAGE] {chat_id}/{message_id}", flush=True)
+            return
+
+        reply_header = getattr(message, "reply_to", None)
+        replied_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
+        if not replied_id:
+            return
+
+        if not any(word.casefold() in text.casefold() for word in TRIGGER_WORDS):
+            return
+        if not await target_is_mine(chat_id, replied_id):
+            print(f"[TRIGGER IGNORED: TARGET NOT MINE] {chat_id}/{replied_id}", flush=True)
+            return
+
+        print(f"[DELETE TRIGGER] {chat_id}/{replied_id} by reply={message_id}", flush=True)
+        await delete_now(chat_id, replied_id)
+    except Exception as exc:
+        print(f"[RAW HANDLER ERROR] chat={chat_id} msg={message_id}: {exc!r}", flush=True)
+        print(traceback.format_exc(), flush=True)
 
 
 async def main():
+    global MY_USER_ID
     async with app:
         me = await app.get_me()
+        MY_USER_ID = me.id
         print(f"[BOT2 LOGGED IN] id={me.id} username={me.username}", flush=True)
 
         for cid in SOURCE_CHANNELS:
@@ -380,12 +482,15 @@ async def main():
             except Exception as exc:
                 print(f"[BASELINE ERROR] {cid}: {exc!r}", flush=True)
 
-        for cid in COMMENT_GROUPS:
+        for cid in COMMENT_GROUPS | DELETE_GROUPS:
             try:
                 await get_channel_peers(cid)
                 print(f"[READY] group={cid}", flush=True)
             except Exception as exc:
                 print(f"[PREWARM ERROR] {cid}: {exc!r}", flush=True)
+
+        for cid in DELETE_GROUPS:
+            await index_recent_own_messages(cid)
 
         asyncio.create_task(poll_source_channels())
         asyncio.create_task(profile_watchdog())
