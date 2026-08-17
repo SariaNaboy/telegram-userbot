@@ -233,6 +233,28 @@ async def apply_profile_maya():
         print(traceback.format_exc(), flush=True)
 
 
+async def current_profile_is_amirali():
+    """وضعیت واقعی هویت را از سرور تلگرام می‌پرسد (نه از حافظه).
+
+    Returns:
+        True  -> الان واقعاً AmirAli است
+        False -> الان AmirAli نیست (Maya یا چیز دیگر)
+        None  -> خطا در دریافت (نامشخص)
+    """
+    try:
+        me = await app.get_me()
+        name = (me.first_name or "")
+        is_amirali = (name == PROFILE_AMIRALI_NAME)
+        print(
+            f"[GET_ME] actual_name={name!r} is_amirali={is_amirali}",
+            flush=True,
+        )
+        return is_amirali
+    except Exception as exc:
+        print(f"[GET_ME ERROR] {exc!r}", flush=True)
+        return None
+
+
 async def profile_watchdog():
     global profile_mode
     while True:
@@ -242,8 +264,19 @@ async def profile_watchdog():
                 and last_post_detected is not None
                 and time.monotonic() - last_post_detected >= PROFILE_REVERT_SECONDS
             ):
-                print(f"[PROFILE TIMER] {PROFILE_REVERT_SECONDS}s بدون پست جدید -> بازگشت به Maya", flush=True)
-                await apply_profile_maya()
+                # اول ببین الان واقعاً AmirAli است یا نه (شاید کاربر دستی عوض کرده باشد)
+                is_amirali = await current_profile_is_amirali()
+                if is_amirali is True:
+                    print(f"[PROFILE TIMER] {PROFILE_REVERT_SECONDS}s بدون پست جدید -> بازگشت به Maya", flush=True)
+                    await apply_profile_maya()
+                elif is_amirali is False:
+                    # کاربر دستی عوض کرده — فقط وضعیت حافظه را هماهنگ کن
+                    profile_mode = "maya"
+                    print("[PROFILE] already Maya (verified via get_me)", flush=True)
+                else:
+                    # خطای get_me — fallback به حافظه
+                    if profile_mode == "amirali":
+                        await apply_profile_maya()
         except Exception as exc:
             print(f"[PROFILE WATCHDOG ERROR] {exc!r}", flush=True)
         await asyncio.sleep(10)
@@ -267,10 +300,17 @@ async def send_comment(chat_id: int, root_message_id: int):
         print(f"[COMMENT SENT] chat={chat_id} root={root_message_id} type={type(result).__name__}", flush=True)
         last_post_detected = time.monotonic()
         asyncio.create_task(notify_admin_delayed())
-        if profile_mode != "amirali":
-            asyncio.create_task(apply_profile_amirali())
+
+        # چک واقعی از سرور: فقط اگر واقعاً AmirAli نیست، تغییر بده
+        is_amirali = await current_profile_is_amirali()
+        if is_amirali is False:
+            await apply_profile_amirali()
+        elif is_amirali is True:
+            print("[PROFILE] already AmirAli (verified via get_me)", flush=True)
         else:
-            print("[PROFILE] already AmirAli — timer reset", flush=True)
+            # خطای get_me — fallback به حافظه
+            if profile_mode != "amirali":
+                await apply_profile_amirali()
     except FloodWait as exc:
         print(f"[COMMENT FLOOD] wait={exc.value}s", flush=True)
         await asyncio.sleep(exc.value + 1)
