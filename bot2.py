@@ -203,14 +203,10 @@ async def apply_profile_amirali():
     global profile_mode
     try:
         await app.update_profile(first_name=PROFILE_AMIRALI_NAME)
-        try:
-            await app.set_username(PROFILE_AMIRALI_USERNAME)
-        except Exception as exc:
-            print(f"[USERNAME SET ERROR (AmirAli)] {exc!r}", flush=True)
         await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
         profile_mode = "amirali"
-        print("[PROFILE -> AmirAli] name=⒜⒨⒤⒭⒜⒧⒤ username=@Amirali126868 photo=hidden bio=hidden", flush=True)
+        print("[PROFILE -> AmirAli] name=⒜⒨⒤⒭⒜⒧⒤ photo=hidden bio=hidden", flush=True)
     except Exception as exc:
         print(f"[PROFILE AMIRALI ERROR] {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -220,14 +216,10 @@ async def apply_profile_maya():
     global profile_mode
     try:
         await app.update_profile(first_name=PROFILE_MAYA_NAME)
-        try:
-            await app.set_username(PROFILE_MAYA_USERNAME)
-        except Exception as exc:
-            print(f"[USERNAME REMOVE ERROR (Maya)] {exc!r}", flush=True)
         await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=True)
         profile_mode = "maya"
-        print("[PROFILE -> Maya] name=Maya username=none photo=public bio=public", flush=True)
+        print("[PROFILE -> Maya] name=Maya photo=public bio=public", flush=True)
     except Exception as exc:
         print(f"[PROFILE MAYA ERROR] {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)

@@ -208,20 +208,15 @@ async def set_privacy_rule(key, allow_all: bool):
 
 
 async def apply_profile_amirali():
-    """هویت AmirAli: نام + یوزرنیم + مخفی‌کردن عکس و بیو از همه."""
+    """هویت AmirAli: نام + مخفی‌کردن عکس و بیو از همه."""
     global profile_mode
     try:
         await app.update_profile(first_name=PROFILE_AMIRALI_NAME)
-        try:
-            await app.set_username(PROFILE_AMIRALI_USERNAME)
-        except Exception as exc:
-            print(f"[USERNAME SET ERROR (AmirAli)] {exc!r}", flush=True)
         await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
         profile_mode = "amirali"
         print(
-            "[PROFILE -> AmirAli] name=AmirAli username=@Amirali126868 "
-            "photo=hidden bio=hidden",
+            "[PROFILE -> AmirAli] name=AmirAli photo=hidden bio=hidden",
             flush=True,
         )
     except Exception as exc:
@@ -230,19 +225,15 @@ async def apply_profile_amirali():
 
 
 async def apply_profile_maya():
-    """هویت Maya: نام + بدون یوزرنیم + نمایش عکس و بیو برای همه."""
+    """هویت Maya: نام + نمایش عکس و بیو برای همه."""
     global profile_mode
     try:
         await app.update_profile(first_name=PROFILE_MAYA_NAME)
-        try:
-            await app.set_username(PROFILE_MAYA_USERNAME)
-        except Exception as exc:
-            print(f"[USERNAME REMOVE ERROR (Maya)] {exc!r}", flush=True)
         await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=True)
         profile_mode = "maya"
         print(
-            "[PROFILE -> Maya] name=Maya username=none photo=public bio=public",
+            "[PROFILE -> Maya] name=Maya photo=public bio=public",
             flush=True,
         )
     except Exception as exc:
