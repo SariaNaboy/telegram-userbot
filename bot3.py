@@ -53,42 +53,32 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 
 # فقط چت‌هایی که با این سشن معتبرند (بقیه Peer id invalid می‌دادند)
 DELETE_GROUPS = {
-    -1001930293711,
+    -1003871526917,
+    -1001244233841,
 }
 COMMENT_GROUPS = {
-    -1001930293711,
+    -1003871526917,
+    -1001244233841,
 }
 
 # Source channels whose post updates may arrive even when Telegram doesn't send
 # the automatic-forward update from the linked discussion group.
 DISCUSSION_SOURCE_CHANNELS = {
-    -1001568689710,
+    -1001682597157,
+    -1001685796396,
 }
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-# کامنت‌های متنوع (به‌جای یک متن تکراری — کاهش سیگنال اسپم)
-# کامنت‌ها: (متن, وزن) — «حق» وزن بیشتر دارد و بیشتر انتخاب می‌شود
+# تنها کامنت bot3: 🦦🦦
 COMMENT_TEXTS = [
-    "😑😑",
-    "😐😐",
-    "🤐🤐",
-    "🫠🫠",
-    "🫤🫤",
-    "😕😕",
-    "حق",
+    "🦦🦦",
 ]
 COMMENT_WEIGHTS = [
-    1,  # 😑😑
-    1,  # 😐😐
-    1,  # 🤐🤐
-    1,  # 🫠🫠
-    1,  # 🫤🫤
-    1,  # 😕😕
-    3,  # حق — شانس ۳ برابر بقیه
+    1,
 ]
-# احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
+# احتمال گذاشتن کامنت (۰.۸۵ = ۸۵٪)
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.85"))
 
 # نوتیفیکیشن ادمین: با تأخیر رندوم ۲-۵ دقیقه و بدون لینک
@@ -365,12 +355,7 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             f"updates_type={type(result).__name__}",
             flush=True,
         )
-        sent_id = extract_sent_msg_id(result)
-        if sent_id:
-            my_comments.append((chat_id, sent_id))
-            # فقط آخرین MAX_TRACKED_COMMENTS را نگه می‌داریم
-            del my_comments[:-MAX_TRACKED_COMMENTS]
-            print(f"[COMMENT TRACKED] chat={chat_id} msg={sent_id} total={len(my_comments)}", flush=True)
+        # کامنت قبلی پاک نمی‌شود (بنا به خواسته)
         asyncio.create_task(notify_admin_delayed())
 
         # تغییر هویت به AmirAli + ریست تایمر «آخرین پست»
@@ -561,14 +546,6 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
         return
 
     last_post_detected = time.monotonic()
-
-    # پاک کردن همهٔ کامنت‌های قبلی (هر پست جدید؛ چه کامنت بگذاریم چه نگذاریم)
-    if my_comments:
-        to_delete = list(my_comments)
-        my_comments.clear()
-        for old_chat, old_msg in to_delete:
-            print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
-            asyncio.create_task(delete_now(old_chat, old_msg))
 
     print(
         f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
@@ -932,10 +909,6 @@ async def main():
         if ENABLE_STARTUP_RECOVERY:
             for chat_id in COMMENT_GROUPS:
                 await recover_recent_discussion_root(chat_id)
-
-        # بازیابی کامنت‌های قبلی خودمان (تا با اولین پست جدید پاک شوند)
-        for chat_id in COMMENT_GROUPS:
-            await recover_my_recent_comments(chat_id)
 
         for chat_id in DELETE_GROUPS:
             await index_recent_own_messages(chat_id)
