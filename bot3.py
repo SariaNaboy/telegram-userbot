@@ -56,11 +56,13 @@ DELETE_GROUPS = {
     -1003871526917,
     -1001244233841,
     -1003925616520,
+    -1002056532687,
 }
 COMMENT_GROUPS = {
     -1003871526917,
     -1001244233841,
     -1003925616520,
+    -1002056532687,
 }
 
 # Source channels whose post updates may arrive even when Telegram doesn't send
@@ -69,6 +71,7 @@ DISCUSSION_SOURCE_CHANNELS = {
     -1001682597157,
     -1001685796396,
     -1001840146534,
+    -1001209688673,
 }
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
