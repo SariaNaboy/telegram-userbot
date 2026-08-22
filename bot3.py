@@ -55,10 +55,12 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 DELETE_GROUPS = {
     -1003871526917,
     -1001244233841,
+    -1003925616520,
 }
 COMMENT_GROUPS = {
     -1003871526917,
     -1001244233841,
+    -1003925616520,
 }
 
 # Source channels whose post updates may arrive even when Telegram doesn't send
@@ -66,6 +68,7 @@ COMMENT_GROUPS = {
 DISCUSSION_SOURCE_CHANNELS = {
     -1001682597157,
     -1001685796396,
+    -1001840146534,
 }
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
@@ -79,7 +82,7 @@ COMMENT_WEIGHTS = [
     1,
 ]
 # احتمال گذاشتن کامنت (۰.۸۵ = ۸۵٪)
-COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.85"))
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "1.0"))
 
 # نوتیفیکیشن ادمین: با تأخیر رندوم ۲-۵ دقیقه و بدون لینک
 ADMIN_NOTIFY_MIN_DELAY = int(os.getenv("ADMIN_NOTIFY_MIN_DELAY", "120"))   # 2 دقیقه
