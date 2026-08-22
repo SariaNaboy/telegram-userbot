@@ -28,8 +28,8 @@ jobs:
           PYTHONUNBUFFERED: "1"
           admin_username: ${{ secrets.admin_username }}
 
-  # جاب ۲: bot2 — اکانت/کانال/گروه متفاوت، کامنت 🦦🦦، دوم/سوم شدن
-  bot2:
+  # جاب ۲: bot3 — کپی از کد رادیو با کانال/گروه متفاوت
+  bot3:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,12 +43,12 @@ jobs:
         run: |
           pip install pyrogram tgcrypto
 
-      - name: Run Bot2 (4.5 hours)
-        run: timeout 16200 python -u bot2.py
+      - name: Run Bot3 (4.5 hours)
+        run: timeout 16200 python -u bot3.py
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
-          SESSION_STRING: ${{ secrets.SESSION_STRING2 }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING3 }}
           PYTHONUNBUFFERED: "1"
           admin_username: ${{ secrets.admin_username }}
 
