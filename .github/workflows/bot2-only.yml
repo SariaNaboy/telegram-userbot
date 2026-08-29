@@ -2,24 +2,29 @@ name: Run Bot2 Only
 
 on:
   workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: 'Duration in hours (e.g. 4.5)'
+        required: true
+        default: '4.5'
 
 jobs:
   bot2:
     runs-on: ubuntu-latest
+    env:
+      DURATION_HOURS: ${{ inputs.duration_hours }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
+        run: pip install pyrogram tgcrypto
+      - name: Run Bot2 (timed)
         run: |
-          pip install pyrogram tgcrypto
-
-      - name: Run Bot2 (4.5 hours)
-        run: timeout 16200 python -u bot2.py
+          SECS=$(python3 -c "print(int(float('$DURATION_HOURS')*3600))")
+          echo "Running for $SECS seconds"
+          timeout "$SECS" python -u bot2.py
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
