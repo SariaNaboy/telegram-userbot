@@ -504,6 +504,11 @@ async def main():
         me = await app.get_me()
         MY_USER_ID = me.id
         print(f"[BOT2 LOGGED IN] id={me.id} username={me.username}", flush=True)
+        try:
+            await app.send_message("me", "script: bot2.py\nacc: bot2")
+            print("[SELF MSG SENT]", flush=True)
+        except Exception as exc:
+            print(f"[SELF MSG ERROR] {exc!r}", flush=True)
 
         for cid in SOURCE_CHANNELS:
             try:
