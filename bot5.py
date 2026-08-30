@@ -898,7 +898,7 @@ async def main():
         MY_USER_ID = me.id
         print(f"[LOGGED IN] id={MY_USER_ID}", flush=True)
         try:
-            await app.send_message("me", "script: bot5.py\nacc: bot3")
+            await app.send_message("me", "script: bot5.py\nacc: main")
             print("[SELF MSG SENT]", flush=True)
         except Exception as exc:
             print(f"[SELF MSG ERROR] {exc!r}", flush=True)
