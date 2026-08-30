@@ -546,6 +546,14 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
         )
         return False
     except Exception as exc:
+        if "MSG_ID_INVALID" in repr(exc):
+            # ارور دائمی: این پست قابل مپ نیست — دفعه بعد دوباره تلاش نکن
+            print(
+                f"[DISCUSSION MAP SKIP PERMANENT] source={source_chat_id}/{source_message_id}: {exc!r}",
+                flush=True,
+            )
+            recently_mapped[(source_chat_id, source_message_id)] = time.monotonic()
+            return True
         print(
             f"[DISCUSSION MAP ERROR] source={source_chat_id}/{source_message_id}: {exc!r}",
             flush=True,
