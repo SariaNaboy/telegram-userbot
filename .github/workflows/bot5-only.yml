@@ -28,6 +28,6 @@ jobs:
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
-          SESSION_STRING: ${{ secrets.SESSION_STRING3 }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
           PYTHONUNBUFFERED: "1"
           admin_username: ${{ secrets.admin_username }}
