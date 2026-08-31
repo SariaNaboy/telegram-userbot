@@ -409,6 +409,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
     root_key = (chat_id, root_message_id)
     deadline = time.monotonic() + WAIT_FOR_FIRST_COMMENT
     last_count = None
+    invalid_hits = 0
 
     try:
         if not hasattr(app, "get_discussion_replies_count"):
@@ -433,8 +434,16 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
             except Exception as exc:
                 print(f"[WATCHER COUNT ERROR] {root_key}: {exc!r}", flush=True)
                 if "MSG_ID_INVALID" in repr(exc):
-                    waiting_roots.pop(root_key, None)
-                    return
+                    # اغلب موقتی است (تأخیر پروپگیشن تلگرام بعد از ساخته شدن ریشه) — تا ۱۰ بار تلاش کن
+                    invalid_hits += 1
+                    print(f"[WATCHER MSG_ID_INVALID {invalid_hits}/10] {root_key} — retry", flush=True)
+                    if invalid_hits >= 10:
+                        waiting_roots.pop(root_key, None)
+                        print(f"[WATCHER GIVE UP] {root_key}", flush=True)
+                        return
+                    await asyncio.sleep(4)
+                    continue
+                invalid_hits = 0
                 if "FLOOD_WAIT" in repr(exc):
                     # وقتی flood آمد، همین مقدار صبر کن تا تلگرام آرام بگیرد
                     await asyncio.sleep(5)
