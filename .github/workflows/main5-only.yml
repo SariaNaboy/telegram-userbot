@@ -32,6 +32,6 @@ jobs:
           PYTHONUNBUFFERED: "1"
           admin_username: ${{ secrets.admin_username }}
           # --- تنظیمات محافظه‌کارانه برای اکانت حساس ---
-          COMMENT_CHANCE: "0.5"          # فقط ۵۰٪ پست‌ها کامنت بگذارد (پیش‌فرض ۸۵٪)
+          COMMENT_CHANCE: "0.85"         # شانس کامنت‌گذاری — درخواست کاربر: برگشت به پیش‌فرض
           MAX_COMMENTS_PER_HOUR: "3"     # سقف ساعتی نصفِ پیش‌فرض (۶)
           SOURCE_POLL_INTERVAL: "30"     # پولینگ آرام‌تر (پیش‌فرض ۱۵ ثانیه)
