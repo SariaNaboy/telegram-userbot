@@ -1,0 +1,37 @@
+name: Run Main5 Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: 'Duration in hours (e.g. 3)'
+        required: true
+        default: '3'
+
+jobs:
+  main5:
+    runs-on: ubuntu-latest
+    env:
+      DURATION_HOURS: ${{ inputs.duration_hours }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pyrogram tgcrypto
+      - name: Run Main5 (timed)
+        run: |
+          SECS=$(python3 -c "print(int(float('$DURATION_HOURS')*3600))")
+          echo "Running for $SECS seconds"
+          timeout "$SECS" python -u main.py
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING5 }}
+          PYTHONUNBUFFERED: "1"
+          admin_username: ${{ secrets.admin_username }}
+          # --- تنظیمات محافظه‌کارانه برای اکانت حساس ---
+          COMMENT_CHANCE: "0.5"          # فقط ۵۰٪ پست‌ها کامنت بگذارد (پیش‌فرض ۸۵٪)
+          MAX_COMMENTS_PER_HOUR: "3"     # سقف ساعتی نصفِ پیش‌فرض (۶)
+          SOURCE_POLL_INTERVAL: "30"     # پولینگ آرام‌تر (پیش‌فرض ۱۵ ثانیه)
