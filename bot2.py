@@ -408,6 +408,18 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                     if invalid_hits >= 10:
                         waiting_roots.pop(root_key, None)
                         print(f"[WATCHER GIVE UP] {root_key}", flush=True)
+                        # پروب تشخیصی: علت را در لاگ بگذار (پیام پاک شده؟ دسترسی رفته؟)
+                        try:
+                            probe = await app.get_messages(chat_id, root_message_id)
+                            probe_empty = getattr(probe, "empty", None) if probe else None
+                            print(f"[GIVEUP PROBE] root message exists={probe is not None} empty={probe_empty}", flush=True)
+                        except Exception as probe_exc:
+                            print(f"[GIVEUP PROBE MSG ERROR] {probe_exc!r}", flush=True)
+                        try:
+                            member = await app.get_chat_member(chat_id, MY_USER_ID)
+                            print(f"[GIVEUP PROBE] my member status={getattr(member, 'status', None)}", flush=True)
+                        except Exception as memb_exc:
+                            print(f"[GIVEUP MEMBER PROBE ERROR] {memb_exc!r}", flush=True)
                         return
                     await asyncio.sleep(4)
                     continue
