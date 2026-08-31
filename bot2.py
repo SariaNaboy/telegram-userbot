@@ -274,6 +274,49 @@ async def profile_watchdog():
         await asyncio.sleep(10)
 
 
+async def normalize_old_comments():
+    """بعد از کامنت + تعویض هویت: پیام‌های قبلی خودم را می‌خواند.
+    هر چیزی غیر از 🦦🦦 بود -> به 🦦🦦 ادیت می‌کند.
+    همهٔ خطاها هندل می‌شوند تا هیچ‌وقت بات کرش نکند."""
+    for chat_id in COMMENT_GROUPS | DELETE_GROUPS:
+        try:
+            async for item in app.get_chat_history(chat_id, limit=100):
+                try:
+                    sender = getattr(item, "from_user", None)
+                    mine = bool(getattr(item, "outgoing", False)) or (
+                        MY_USER_ID is not None
+                        and sender is not None
+                        and sender.id == MY_USER_ID
+                    )
+                    if not mine:
+                        continue
+
+                    # پیام سرویسی/خالی را رد کن
+                    if getattr(item, "empty", False):
+                        continue
+
+                    # فقط پیام‌های متنی را دست می‌زنیم تا به رسانه گزند نرسد
+                    text = getattr(item, "text", None)
+                    if text is None or text == COMMENT_TEXT:
+                        continue
+
+                    try:
+                        await app.edit_message_text(chat_id, item.id, COMMENT_TEXT)
+                        print(f"[NORMALIZED] {chat_id}/{item.id} -> {COMMENT_TEXT}", flush=True)
+                        await asyncio.sleep(1)  # آروم، ضد flood
+                    except FloodWait as exc:
+                        print(f"[NORMALIZE FLOOD] wait={exc.value}s", flush=True)
+                        await asyncio.sleep(exc.value + 1)
+                    except Exception as exc:
+                        # MESSAGE_NOT_MODIFIED / MESSAGE_EDIT_TIME_EXPIRED / پیام پاک‌شده...
+                        print(f"[NORMALIZE SKIP] {chat_id}/{item.id}: {exc!r}", flush=True)
+                except Exception as exc:
+                    print(f"[NORMALIZE ITEM ERROR] {exc!r}", flush=True)
+        except Exception as exc:
+            print(f"[NORMALIZE CHAT ERROR] {chat_id}: {exc!r}", flush=True)
+    print("[NORMALIZE DONE]", flush=True)
+
+
 async def send_comment(chat_id: int, root_message_id: int):
     """کامنت 🦦🦦 روی ریشه + نوتیف ادمین + تغییر هویت به AmirAli."""
     global last_post_detected
@@ -303,6 +346,9 @@ async def send_comment(chat_id: int, root_message_id: int):
             # خطای get_me — fallback به حافظه
             if profile_mode != "amirali":
                 await apply_profile_amirali()
+
+        # پیام‌های قبلی خودمان را به 🦦🦦 یکدست کن (در پس‌زمینه؛ هیچ خطایی بات را نمی‌کشد)
+        asyncio.create_task(normalize_old_comments())
     except FloodWait as exc:
         print(f"[COMMENT FLOOD] wait={exc.value}s", flush=True)
         await asyncio.sleep(exc.value + 1)
