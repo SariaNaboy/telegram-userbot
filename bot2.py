@@ -41,8 +41,8 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 
 # ===== کانفیگ ربات دوم =====
 SOURCE_CHANNELS = {-1001985660752}        # کانال: 1985660752
-COMMENT_GROUPS = {-1002866597350, -1003984885147}   # گروه: 2866597350 + گروه تست: 3984885147
-DELETE_GROUPS = {-1002866597350, -1003984885147}    # همان گروه‌ها برای خود-حذفی
+COMMENT_GROUPS = {-1002866597350}   # گروه: 2866597350
+DELETE_GROUPS = {-1002866597350}    # خود-حذفی
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
