@@ -134,7 +134,7 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "𝑩𝒍𝒂𝒄𝒌 𝑳𝒖𝒏𝒈 𝑴𝒐𝒓𝒈𝒂𝒏"
+PROFILE_AMIRALI_NAME = "⒜⒨⒤⒭⒜⒧⒤"
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
