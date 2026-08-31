@@ -393,36 +393,10 @@ def comments_in_last_hour() -> int:
     return len(comment_sent_times)
 
 
-async def reserve_and_send_comment(chat_id: int, root_message_id: int, reason: str):
-    """Atomically reserve a root in this process, then send exactly once."""
-    root_key = (chat_id, root_message_id)
-    if root_key in comment_attempted:
-        return False
-
-    # حتی اگر کامنت نگذاریم، ریشه را علامت‌گذاری می‌کنیم که دوباره تلاش نشود
-    comment_attempted.add(root_key)
-    waiting_roots.pop(root_key, None)
-
-    # شانس ۷۵٪: اگر نیفتاد، این پست عمداً بدون کامنت می‌ماند
-    if random.random() > COMMENT_CHANCE:
-        print(
-            f"[COMMENT SKIPPED (chance)] {root_key} reason={reason} "
-            f"chance={COMMENT_CHANCE}",
-            flush=True,
-        )
-        return False
-
-    # سقف ساعتی: اگر زیاد کامنت گذاشتیم، فعلاً نگذاریم
-    if comments_in_last_hour() >= MAX_COMMENTS_PER_HOUR:
-        print(
-            f"[COMMENT SKIPPED (rate-limit)] {root_key} "
-            f"already {MAX_COMMENTS_PER_HOUR}/hour",
-            flush=True,
-        )
-        return False
-
+async def send_comment_direct(chat_id: int, root_message_id: int, reason: str):
+    """ارسال مستقیم کامنت — تصمیم (شانس/سقف ساعتی) قبلاً در observe_discussion_root گرفته شده."""
     comment_sent_times.append(time.monotonic())
-    print(f"[COMMENT RESERVED] {root_key} reason={reason}", flush=True)
+    print(f"[COMMENT SEND GO] {(chat_id, root_message_id)} reason={reason}", flush=True)
     await send_comment_after_external_reply(chat_id, root_message_id)
     return True
 
@@ -451,7 +425,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                     print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
                     last_count = count
                 if count >= 1:
-                    await reserve_and_send_comment(chat_id, root_message_id, "watcher-count")
+                    await send_comment_direct(chat_id, root_message_id, "watcher-count")
                     return
             except Exception as exc:
                 print(f"[WATCHER COUNT ERROR] {root_key}: {exc!r}", flush=True)
@@ -466,9 +440,9 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
         waiting_roots.pop(root_key, None)
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
 
-        # اگر هیچ کامنتی نیامد ولی کاربر خواسته باز هم کامنت فرستاده شود:
-        if COMMENT_IF_NO_REPLIES and root_key not in comment_attempted:
-            await reserve_and_send_comment(chat_id, root_message_id, "timeout-force")
+        # اگر هیچ کامنتی نیامد ولی خواسته شده باز هم کامنت فرستاده شود:
+        if COMMENT_IF_NO_REPLIES:
+            await send_comment_direct(chat_id, root_message_id, "timeout-force")
     finally:
         thread_watchers.pop(root_key, None)
 
@@ -563,6 +537,12 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
 
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
     """Common root entry point used by high-level, raw and polling handlers."""
+    """ترتیب جدید (درخواست کاربر):
+    ۱) تصمیم کامنت اولِ کار گرفته می‌شود (شانس + سقف ساعتی)
+    ۲) اگر بله: هویت *قبل* از کامنت فوراً به AmirAli می‌رود
+    ۳) الگوریتم کامنت شروع می‌شود — هدف: کامنت دوم بودن
+    ۴) در انتها (چه کامنت بگذارد چه نه) کامنت قبلی پاک می‌شود
+    """
     global last_post_detected, my_comments
     root_key = (chat_id, root_message_id)
     if root_key in comment_attempted or root_key in thread_watchers:
@@ -570,30 +550,47 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
 
     last_post_detected = time.monotonic()
 
-    # پاک کردن همهٔ کامنت‌های قبلی (هر پست جدید؛ چه کامنت بگذاریم چه نگذاریم)
-    if my_comments:
-        to_delete = list(my_comments)
-        my_comments.clear()
-        for old_chat, old_msg in to_delete:
-            print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
-            asyncio.create_task(delete_now(old_chat, old_msg))
-
     print(
         f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
         f"source_channel={source_channel_id} known_count={known_count} via={source}",
         flush=True,
     )
 
-    # A root seen late may already have comments. Do not wait for an update that
-    # happened before this runner connected.
-    if known_count is not None and known_count >= 1:
-        await reserve_and_send_comment(chat_id, root_message_id, "root-already-has-replies")
-        return
+    # ---- ۱) تصمیم فوری ----
+    decided_comment = True
+    if random.random() > COMMENT_CHANCE:
+        decided_comment = False
+        print(f"[COMMENT DECIDED NO (chance)] {root_key} chance={COMMENT_CHANCE}", flush=True)
+    elif comments_in_last_hour() >= MAX_COMMENTS_PER_HOUR:
+        decided_comment = False
+        print(f"[COMMENT DECIDED NO (rate-limit)] {root_key} already {MAX_COMMENTS_PER_HOUR}/hour", flush=True)
 
-    waiting_roots[root_key] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
-    thread_watchers[root_key] = asyncio.create_task(
-        watch_discussion_root(chat_id, root_message_id)
-    )
+    # ریشه از این لحظه «تصمیم‌گرفته‌شده» است؛ مسیرهای دیگر دیگر roll نمی‌زنند
+    comment_attempted.add(root_key)
+    waiting_roots.pop(root_key, None)
+
+    if decided_comment:
+        print(f"[COMMENT DECIDED YES] {root_key}", flush=True)
+        # ---- ۲) هویت فوراً عوض شود (قبل از هر کامنت) ----
+        asyncio.create_task(apply_profile_amirali())
+        # ---- ۳) الگوریتم کامنت ----
+        if known_count is not None and known_count >= 1:
+            # پست را دیر دیده‌ایم و از قبل کامنت دارد → همان لحظه بفرست (می‌شود دومیِ بعدی)
+            await send_comment_direct(chat_id, root_message_id, "root-already-has-replies")
+        else:
+            # صبر برای اولین کامنت بیرونی → بعد بفرست تا «دوم» شود
+            waiting_roots[root_key] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+            thread_watchers[root_key] = asyncio.create_task(
+                watch_discussion_root(chat_id, root_message_id)
+            )
+
+    # ---- ۴) پاک‌سازی کامنت‌های قبلی — همیشه، ولی در انتها تا سرعت کامنت‌گذاری حفظ شود ----
+    if my_comments:
+        to_delete = list(my_comments)
+        my_comments.clear()
+        for old_chat, old_msg in to_delete:
+            print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
+            asyncio.create_task(delete_now(old_chat, old_msg))
 
 
 @app.on_message(filters.chat(list(DISCUSSION_SOURCE_CHANNELS)) & ~filters.outgoing)
@@ -710,7 +707,7 @@ async def on_raw_update(client, update, users, chats):
                         )
 
                     if sample_key in waiting_roots:
-                        await reserve_and_send_comment(chat_id, candidate_root_id, "raw-external-reply")
+                        await send_comment_direct(chat_id, candidate_root_id, "raw-external-reply")
                     elif sample_key not in recovery_checked:
                         recovery_checked.add(sample_key)
                         # Reply may arrive before its root update. Confirm that the
