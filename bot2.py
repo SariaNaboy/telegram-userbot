@@ -386,6 +386,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
     root_key = (chat_id, root_message_id)
     deadline = time.monotonic() + WAIT_FOR_FIRST_COMMENT
     last_count = None
+    invalid_hits = 0
     try:
         while time.monotonic() < deadline:
             if root_key in comment_attempted:
@@ -401,8 +402,16 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
             except Exception as exc:
                 print(f"[WATCHER COUNT ERROR] {root_key}: {exc!r}", flush=True)
                 if "MSG_ID_INVALID" in repr(exc):
-                    waiting_roots.pop(root_key, None)
-                    return
+                    # اغلب موقتی است (تأخیر پروپگیشن تلگرام بعد از ساخته شدن ریشه) — تا ۱۰ بار تلاش کن
+                    invalid_hits += 1
+                    print(f"[WATCHER MSG_ID_INVALID {invalid_hits}/10] {root_key} — retry", flush=True)
+                    if invalid_hits >= 10:
+                        waiting_roots.pop(root_key, None)
+                        print(f"[WATCHER GIVE UP] {root_key}", flush=True)
+                        return
+                    await asyncio.sleep(4)
+                    continue
+                invalid_hits = 0
                 if "FLOOD_WAIT" in repr(exc):
                     await asyncio.sleep(5)
             await asyncio.sleep(4)
