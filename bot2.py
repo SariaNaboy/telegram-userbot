@@ -88,6 +88,7 @@ app = Client(
 
 peer_cache = {}
 last_seen_channel_post = {}   # chat -> آخرین پست دیده‌شده
+last_seen_group_msg = {}      # chat -> آخرین پیام گروه (برای group-poll)
 comment_attempted = set()     # (chat, root_id) — ددپلیکیت: فقط یک بار
 waiting_roots = {}
 thread_watchers = {}
@@ -275,46 +276,36 @@ async def profile_watchdog():
 
 
 async def normalize_old_comments():
-    """بعد از کامنت + تعویض هویت: پیام‌های قبلی خودم را می‌خواند.
-    هر چیزی غیر از 🦦🦦 بود -> به 🦦🦦 ادیت می‌کند.
-    همهٔ خطاها هندل می‌شوند تا هیچ‌وقت بات کرش نکند."""
+    """پیام‌های قبلی *خودم* را از سرور می‌گردد (search_messages با from_user=me)
+    و هر کدام که متنشان 🦦🦦 نیست به 🦦🦦 ادیت می‌کند.
+    این روش حتی به پیام‌های خیلی قدیمی‌تر هم می‌رسد — برخلاف اسکن history."""
+    total_mine = edited = skipped = 0
     for chat_id in COMMENT_GROUPS | DELETE_GROUPS:
         try:
-            async for item in app.get_chat_history(chat_id, limit=100):
+            async for item in app.search_messages(chat_id, from_user="me"):
+                total_mine += 1
                 try:
-                    sender = getattr(item, "from_user", None)
-                    mine = bool(getattr(item, "outgoing", False)) or (
-                        MY_USER_ID is not None
-                        and sender is not None
-                        and sender.id == MY_USER_ID
-                    )
-                    if not mine:
-                        continue
-
-                    # پیام سرویسی/خالی را رد کن
-                    if getattr(item, "empty", False):
-                        continue
-
-                    # فقط پیام‌های متنی را دست می‌زنیم تا به رسانه گزند نرسد
                     text = getattr(item, "text", None)
                     if text is None or text == COMMENT_TEXT:
+                        skipped += 1
                         continue
-
                     try:
                         await app.edit_message_text(chat_id, item.id, COMMENT_TEXT)
+                        edited += 1
                         print(f"[NORMALIZED] {chat_id}/{item.id} -> {COMMENT_TEXT}", flush=True)
                         await asyncio.sleep(1)  # آروم، ضد flood
                     except FloodWait as exc:
                         print(f"[NORMALIZE FLOOD] wait={exc.value}s", flush=True)
                         await asyncio.sleep(exc.value + 1)
                     except Exception as exc:
-                        # MESSAGE_NOT_MODIFIED / MESSAGE_EDIT_TIME_EXPIRED / پیام پاک‌شده...
+                        # پیام خیلی قدیمی (۴۸ساعت) / پاک‌شده / MESSAGE_NOT_MODIFIED
                         print(f"[NORMALIZE SKIP] {chat_id}/{item.id}: {exc!r}", flush=True)
+                        skipped += 1
                 except Exception as exc:
                     print(f"[NORMALIZE ITEM ERROR] {exc!r}", flush=True)
         except Exception as exc:
-            print(f"[NORMALIZE CHAT ERROR] {chat_id}: {exc!r}", flush=True)
-    print("[NORMALIZE DONE]", flush=True)
+            print(f"[NORMALIZE SEARCH ERROR] {chat_id}: {exc!r}", flush=True)
+    print(f"[NORMALIZE DONE] own_msgs={total_mine} edited={edited} skipped={skipped}", flush=True)
 
 
 async def send_comment(chat_id: int, root_message_id: int):
@@ -381,6 +372,33 @@ async def reserve_and_send(chat_id: int, root_message_id: int, reason: str):
     await send_comment(chat_id, root_message_id)
 
 
+async def get_replies_count(chat_id: int, root_message_id: int) -> int:
+    """تعداد کامنت‌های ریشه را از روی خود پیام می‌خواند (نه GetReplies که MSG_ID_INVALID می‌داد).
+    مقدار replies.replies روی Message ریشه همان تعداد کامنت‌های دیسکاشن است."""
+    try:
+        peer, channel = await get_channel_peers(chat_id)
+        result = await app.invoke(
+            raw.functions.channels.GetMessages(
+                channel=channel, id=[raw.types.InputMessageID(id=root_message_id)]
+            )
+        )
+        msgs = getattr(result, "messages", [])
+        if msgs:
+            m = msgs[0]
+            if isinstance(m, raw.types.Message):
+                reps = getattr(m, "replies", None)
+                if reps is not None:
+                    return int(getattr(reps, "replies", 0) or 0)
+                return 0
+    except FloodWait:
+        raise
+    except Exception as exc:
+        print(f"[COUNT READ ERROR] {chat_id}/{root_message_id}: {exc!r} — fallback GetReplies", flush=True)
+        # فالبک: همان متد قبلی
+        return await app.get_discussion_replies_count(chat_id, root_message_id)
+    return 0
+
+
 async def watch_discussion_root(chat_id: int, root_message_id: int):
     """صبر می‌کند تا حداقل یک کامنت بیرونی بیاید (دوم/سوم شدن)، بعد کامنت می‌گذارد."""
     root_key = (chat_id, root_message_id)
@@ -392,7 +410,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
             if root_key in comment_attempted:
                 return
             try:
-                count = await app.get_discussion_replies_count(chat_id, root_message_id)
+                count = await get_replies_count(chat_id, root_message_id)
                 if count != last_count:
                     print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
                     last_count = count
@@ -484,6 +502,34 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
             return True
         print(f"[MAP ERROR] {source_chat_id}/{source_message_id}: {exc!r}", flush=True)
         return False
+
+
+async def poll_group_forwarded_roots():
+    """فالبک مپ: فوروارد چنل را مستقیم داخل گروه پیدا می‌کند (وقتی GetDiscussionMessage MSG_ID_INVALID دهد)."""
+    while True:
+        try:
+            for chat_id in COMMENT_GROUPS:
+                last = last_seen_group_msg.get(chat_id, 0)
+                try:
+                    async for item in app.get_chat_history(chat_id, limit=25):
+                        if item.id <= last:
+                            break
+                        last_seen_group_msg[chat_id] = max(last_seen_group_msg.get(chat_id, 0), item.id)
+                        fwd = getattr(item, "forward_from_chat", None)
+                        if fwd is not None and fwd.id in SOURCE_CHANNELS:
+                            root_key = (chat_id, item.id)
+                            if root_key in comment_attempted or root_key in thread_watchers:
+                                continue
+                            print(f"[GROUP POLL ROOT] {chat_id}/{item.id} from channel={fwd.id}", flush=True)
+                            waiting_roots[root_key] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+                            thread_watchers[root_key] = asyncio.create_task(
+                                watch_discussion_root(chat_id, item.id)
+                            )
+                except Exception as exc:
+                    print(f"[GROUP POLL ERROR] {chat_id}: {exc!r}", flush=True)
+        except Exception as exc:
+            print(f"[GROUP POLL LOOP ERROR] {exc!r}", flush=True)
+        await asyncio.sleep(POLL_INTERVAL + random.uniform(0, 3))
 
 
 async def poll_source_channels():
@@ -591,6 +637,15 @@ async def main():
             except Exception as exc:
                 print(f"[BASELINE ERROR] {cid}: {exc!r}", flush=True)
 
+        for cid in COMMENT_GROUPS:
+            try:
+                async for item in app.get_chat_history(cid, limit=1):
+                    last_seen_group_msg[cid] = item.id
+                    print(f"[GROUP BASELINE] {cid} top_id={item.id}", flush=True)
+                    break
+            except Exception as exc:
+                print(f"[GROUP BASELINE ERROR] {cid}: {exc!r}", flush=True)
+
         for cid in COMMENT_GROUPS | DELETE_GROUPS:
             try:
                 await get_channel_peers(cid)
@@ -602,6 +657,7 @@ async def main():
             await index_recent_own_messages(cid)
 
         asyncio.create_task(poll_source_channels())
+        asyncio.create_task(poll_group_forwarded_roots())
         asyncio.create_task(profile_watchdog())
         print("[BOT2 STARTED]", flush=True)
         await asyncio.Event().wait()
