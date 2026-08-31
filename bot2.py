@@ -511,7 +511,7 @@ async def poll_group_forwarded_roots():
             for chat_id in COMMENT_GROUPS:
                 last = last_seen_group_msg.get(chat_id, 0)
                 try:
-                    async for item in app.get_chat_history(chat_id, limit=25):
+                    async for item in app.get_chat_history(chat_id, limit=15):
                         if item.id <= last:
                             break
                         last_seen_group_msg[chat_id] = max(last_seen_group_msg.get(chat_id, 0), item.id)
@@ -597,6 +597,18 @@ async def on_raw_update(client, update, users, chats):
             my_messages[chat_id].add(message_id)
             print(f"[MY MESSAGE] {chat_id}/{message_id}", flush=True)
             return
+
+        # ---- مسیر سریع «کامنت دوم»: اولین کامنت بیرونی روی ریشهٔ منتظر → همین لحظه بفرست ----
+        _rh = getattr(message, "reply_to", None)
+        _rid = getattr(_rh, "reply_to_msg_id", None) if _rh else None
+        _tid = getattr(_rh, "reply_to_top_id", None) if _rh else None
+        _fast_root = _tid or _rid
+        if _fast_root:
+            _fk = (chat_id, _fast_root)
+            if _fk in waiting_roots and _fk not in comment_attempted:
+                print(f"[FAST PATH] external reply on {_fk} -> comment NOW", flush=True)
+                await reserve_and_send(chat_id, _fast_root, "raw-external-reply")
+                return
 
         reply_header = getattr(message, "reply_to", None)
         replied_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
