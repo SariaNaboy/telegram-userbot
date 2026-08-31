@@ -162,6 +162,7 @@ my_messages = defaultdict(set)
 # root_key = (discussion_chat_id, forwarded_root_message_id)
 waiting_roots = {}
 comment_attempted = set()
+comment_sent = set()   # ریشه‌هایی که کامنتشان واقعاً فرستاده شد — برای توقف واچر
 thread_watchers = {}
 recovery_checked = set()
 logged_reply_roots = set()
@@ -395,6 +396,8 @@ def comments_in_last_hour() -> int:
 
 async def send_comment_direct(chat_id: int, root_message_id: int, reason: str):
     """ارسال مستقیم کامنت — تصمیم (شانس/سقف ساعتی) قبلاً در observe_discussion_root گرفته شده."""
+    comment_sent.add((chat_id, root_message_id))
+    waiting_roots.pop((chat_id, root_message_id), None)
     comment_sent_times.append(time.monotonic())
     print(f"[COMMENT SEND GO] {(chat_id, root_message_id)} reason={reason}", flush=True)
     await send_comment_after_external_reply(chat_id, root_message_id)
@@ -417,7 +420,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
             return
 
         while time.monotonic() < deadline:
-            if root_key in comment_attempted:
+            if root_key in comment_sent:
                 return
             try:
                 count = await app.get_discussion_replies_count(chat_id, root_message_id)
@@ -706,7 +709,7 @@ async def on_raw_update(client, update, users, chats):
                             flush=True,
                         )
 
-                    if sample_key in waiting_roots:
+                    if sample_key in waiting_roots and sample_key not in comment_sent:
                         await send_comment_direct(chat_id, candidate_root_id, "raw-external-reply")
                     elif sample_key not in recovery_checked:
                         recovery_checked.add(sample_key)
