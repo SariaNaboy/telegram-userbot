@@ -50,6 +50,7 @@ TRIGGER_WORDS = {
 COMMENT_TEXT = "🦦🦦"
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
+GROUP_POLL_INTERVAL = float(os.getenv("GROUP_POLL_INTERVAL", "5.0"))
 PROFILE_REVERT_SECONDS = 600             # ۱۰ دقیقه بعد از آخرین پست -> برگشت به Maya
 ADMIN_NOTIFY_MIN = 10                    # ۱۰ ثانیه بعد از کامنت
 ADMIN_NOTIFY_MAX = 30                    # ۳۰ ثانیه بعد از کامنت
@@ -275,7 +276,10 @@ async def profile_watchdog():
         await asyncio.sleep(10)
 
 
-async def normalize_old_comments():
+_normalize_running = False
+
+
+async def _normalize_old_comments_inner():
     """پیام‌های قبلی *خودم* را از سرور می‌گردد (search_messages با from_user=me)
     و هر کدام که متنشان 🦦🦦 نیست به 🦦🦦 ادیت می‌کند.
     این روش حتی به پیام‌های خیلی قدیمی‌تر هم می‌رسد — برخلاف اسکن history."""
@@ -306,6 +310,21 @@ async def normalize_old_comments():
         except Exception as exc:
             print(f"[NORMALIZE SEARCH ERROR] {chat_id}: {exc!r}", flush=True)
     print(f"[NORMALIZE DONE] own_msgs={total_mine} edited={edited} skipped={skipped}", flush=True)
+
+
+async def normalize_old_comments():
+    """فقط یک نمونه همزمان اجرا شود تا بعد از هر کامنت بار RPC انباشته نشود."""
+    global _normalize_running
+    if _normalize_running:
+        print("[NORMALIZE SKIPPED] already running", flush=True)
+        return
+    _normalize_running = True
+    try:
+        await _normalize_old_comments_inner()
+    except Exception as exc:
+        print(f"[NORMALIZE ERROR] {exc!r}", flush=True)
+    finally:
+        _normalize_running = False
 
 
 async def send_comment(chat_id: int, root_message_id: int):
@@ -439,12 +458,12 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                         except Exception as memb_exc:
                             print(f"[GIVEUP MEMBER PROBE ERROR] {memb_exc!r}", flush=True)
                         return
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(1)
                     continue
                 invalid_hits = 0
                 if "FLOOD_WAIT" in repr(exc):
                     await asyncio.sleep(5)
-            await asyncio.sleep(4)
+            await asyncio.sleep(1.5)
         waiting_roots.pop(root_key, None)
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
     finally:
@@ -460,8 +479,8 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
         if key in recently_mapped and now - recently_mapped[key] < 120:
             return True
 
-        max_retries = 3
-        for attempt in range(max_retries):
+        root = None
+        for attempt in range(10):
             try:
                 root = await app.get_discussion_message(source_chat_id, source_message_id)
                 break
@@ -469,9 +488,18 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
                 wait = exc.value + 1
                 print(f"[MAP FLOOD] {key} wait={wait}s attempt={attempt + 1}", flush=True)
                 await asyncio.sleep(wait)
-        else:
-            print(f"[MAP FAILED] {key} — retry next cycle", flush=True)
-            return False
+            except Exception as exc:
+                if "MSG_ID_INVALID" in repr(exc):
+                    # ریس پروپگیشن: کپی دیسکاشن هنوز ساخته نشده — کوتاه صبر و تلاش مجدد
+                    await asyncio.sleep(0.8)
+                    continue
+                print(f"[MAP ERR RETRY] {key} attempt={attempt + 1}: {exc!r}", flush=True)
+                return False
+        if root is None:
+            # ۱۰ بار تلاش و هنوز ناممکن — واقعاً قابل مپ نیست، دائمی ردش کن
+            print(f"[MAP SKIP PERMANENT] {key} after 10 retries", flush=True)
+            recently_mapped[key] = now
+            return True
 
         discussion_chat_id = root.chat.id
         if discussion_chat_id not in COMMENT_GROUPS:
@@ -529,7 +557,7 @@ async def poll_group_forwarded_roots():
                     print(f"[GROUP POLL ERROR] {chat_id}: {exc!r}", flush=True)
         except Exception as exc:
             print(f"[GROUP POLL LOOP ERROR] {exc!r}", flush=True)
-        await asyncio.sleep(POLL_INTERVAL + random.uniform(0, 3))
+        await asyncio.sleep(GROUP_POLL_INTERVAL + random.uniform(0, 2))
 
 
 async def poll_source_channels():
@@ -583,6 +611,25 @@ async def on_raw_update(client, update, users, chats):
                 last_post_detected = time.monotonic()
                 asyncio.create_task(observe_channel_post_discussion(chat_id, message_id))
 
+        # ---- مسیر فوری: فوروارد خودکار پست کانال داخل گروه = ریشهٔ تازه (بدون هیچ RPC) ----
+        if chat_id in COMMENT_GROUPS:
+            _fwd = getattr(message, "fwd_from", None)
+            if isinstance(_fwd, raw.types.MessageFwdHeader):
+                _from_id = getattr(_fwd, "from_id", None)
+                if isinstance(_from_id, PeerChannel):
+                    _src = chat_id_from_channel_id(_from_id.channel_id)
+                    if _src in SOURCE_CHANNELS:
+                        _rk = (chat_id, message_id)
+                        if _rk not in comment_attempted and _rk not in thread_watchers:
+                            _cpost = getattr(_fwd, "channel_post", None) or 0
+                            print(f"[RAW FWD ROOT] {chat_id}/{message_id} from={_src}/{_cpost}", flush=True)
+                            last_post_detected = time.monotonic()
+                            last_seen_channel_post[_src] = max(last_seen_channel_post.get(_src, 0), _cpost)
+                            waiting_roots[_rk] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+                            thread_watchers[_rk] = asyncio.create_task(
+                                watch_discussion_root(chat_id, message_id)
+                            )
+
         # ---- خود-حذفی: اگر کسی با کلمه تریگر به پیام ما ریپلی کرد، پاک کن ----
         if chat_id not in DELETE_GROUPS:
             return
@@ -606,8 +653,10 @@ async def on_raw_update(client, update, users, chats):
         if _fast_root:
             _fk = (chat_id, _fast_root)
             if _fk in waiting_roots and _fk not in comment_attempted:
+                comment_attempted.add(_fk)
+                waiting_roots.pop(_fk, None)
                 print(f"[FAST PATH] external reply on {_fk} -> comment NOW", flush=True)
-                await reserve_and_send(chat_id, _fast_root, "raw-external-reply")
+                asyncio.create_task(send_comment(chat_id, _fast_root))
                 return
 
         reply_header = getattr(message, "reply_to", None)
