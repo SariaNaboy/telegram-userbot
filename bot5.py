@@ -138,7 +138,7 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "⒜⒨⒤⒭⒜⒧⒤"
+PROFILE_AMIRALI_NAME = "𝑩𝒍𝒂𝒄𝒌 𝑳𝒖𝒏𝒈 𝑴𝒐𝒓𝒈𝒂𝒏"
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
@@ -161,7 +161,8 @@ peer_cache = {}
 my_messages = defaultdict(set)
 # root_key = (discussion_chat_id, forwarded_root_message_id)
 waiting_roots = {}
-comment_attempted = set()
+comment_attempted = set()  # تصمیم گرفته‌شده
+comment_sent = set()       # واقعاً ارسال‌شده
 thread_watchers = {}
 recovery_checked = set()
 logged_reply_roots = set()
@@ -372,13 +373,8 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             del my_comments[:-MAX_TRACKED_COMMENTS]
             print(f"[COMMENT TRACKED] chat={chat_id} msg={sent_id} total={len(my_comments)}", flush=True)
         asyncio.create_task(notify_admin_delayed())
-
-        # تغییر هویت به AmirAli + ریست تایمر «آخرین پست»
+        # هویت قبلاً در لحظهٔ تصمیم (قبل از کامنت) سوییچ شده است
         last_post_detected = time.monotonic()
-        if profile_mode != "amirali":
-            asyncio.create_task(apply_profile_amirali())
-        else:
-            print("[PROFILE] already AmirAli — timer reset", flush=True)
     except FloodWait as exc:
         print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}", flush=True)
     except Exception as exc:
@@ -394,37 +390,20 @@ def comments_in_last_hour() -> int:
 
 
 async def reserve_and_send_comment(chat_id: int, root_message_id: int, reason: str):
-    """Atomically reserve a root in this process, then send exactly once."""
+    """ارسال مستقیم — تصمیم (شانس/سقف) قبلاً در observe_discussion_root گرفته شده."""
     root_key = (chat_id, root_message_id)
-    if root_key in comment_attempted:
+    if root_key in comment_sent:
         return False
 
-    # حتی اگر کامنت نگذاریم، ریشه را علامت‌گذاری می‌کنیم که دوباره تلاش نشود
-    comment_attempted.add(root_key)
+    comment_sent.add(root_key)
     waiting_roots.pop(root_key, None)
-
-    # شانس ۷۵٪: اگر نیفتاد، این پست عمداً بدون کامنت می‌ماند
-    if random.random() > COMMENT_CHANCE:
-        print(
-            f"[COMMENT SKIPPED (chance)] {root_key} reason={reason} "
-            f"chance={COMMENT_CHANCE}",
-            flush=True,
-        )
-        return False
-
-    # سقف ساعتی: اگر زیاد کامنت گذاشتیم، فعلاً نگذاریم
-    if comments_in_last_hour() >= MAX_COMMENTS_PER_HOUR:
-        print(
-            f"[COMMENT SKIPPED (rate-limit)] {root_key} "
-            f"already {MAX_COMMENTS_PER_HOUR}/hour",
-            flush=True,
-        )
-        return False
 
     comment_sent_times.append(time.monotonic())
     print(f"[COMMENT RESERVED] {root_key} reason={reason}", flush=True)
     await send_comment_after_external_reply(chat_id, root_message_id)
     return True
+
+
 
 
 async def watch_discussion_root(chat_id: int, root_message_id: int):
@@ -444,7 +423,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
             return
 
         while time.monotonic() < deadline:
-            if root_key in comment_attempted:
+            if root_key in comment_sent:
                 return
             try:
                 count = await app.get_discussion_replies_count(chat_id, root_message_id)
@@ -488,7 +467,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
 
         # اگر هیچ کامنتی نیامد ولی کاربر خواسته باز هم کامنت فرستاده شود:
-        if COMMENT_IF_NO_REPLIES and root_key not in comment_attempted:
+        if COMMENT_IF_NO_REPLIES and root_key not in comment_sent:
             await reserve_and_send_comment(chat_id, root_message_id, "timeout-force")
     finally:
         thread_watchers.pop(root_key, None)
@@ -583,7 +562,7 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
 
 
 async def observe_discussion_root(chat_id: int, root_message_id: int, source_channel_id=None, known_count=None, source="unknown"):
-    """Common root entry point used by high-level, raw and polling handlers."""
+    """ترتیب main5: ۱) تصمیم فوری ۲) هویت قبل از کامنت ۳) الگوریتم کامنت ۴) پاک‌سازی در انتها."""
     global last_post_detected, my_comments
     root_key = (chat_id, root_message_id)
     if root_key in comment_attempted or root_key in thread_watchers:
@@ -591,7 +570,38 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
 
     last_post_detected = time.monotonic()
 
-    # پاک کردن همهٔ کامنت‌های قبلی (هر پست جدید؛ چه کامنت بگذاریم چه نگذاریم)
+    print(
+        f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
+        f"source_channel={source_channel_id} known_count={known_count} via={source}",
+        flush=True,
+    )
+
+    # ---- ۱) تصمیم فوری ----
+    decided_comment = True
+    if random.random() > COMMENT_CHANCE:
+        decided_comment = False
+        print(f"[COMMENT DECIDED NO (chance)] {root_key} chance={COMMENT_CHANCE}", flush=True)
+    elif comments_in_last_hour() >= MAX_COMMENTS_PER_HOUR:
+        decided_comment = False
+        print(f"[COMMENT DECIDED NO (rate-limit)] {root_key} already {MAX_COMMENTS_PER_HOUR}/hour", flush=True)
+
+    comment_attempted.add(root_key)
+    waiting_roots.pop(root_key, None)
+
+    if decided_comment:
+        print(f"[COMMENT DECIDED YES] {root_key}", flush=True)
+        # ---- ۲) هویت فوری (قبل از کامنت) ----
+        asyncio.create_task(apply_profile_amirali())
+        # ---- ۳) الگوریتم کامنت ----
+        if known_count is not None and known_count >= 1:
+            await reserve_and_send_comment(chat_id, root_message_id, "root-already-has-replies")
+        else:
+            waiting_roots[root_key] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+            thread_watchers[root_key] = asyncio.create_task(
+                watch_discussion_root(chat_id, root_message_id)
+            )
+
+    # ---- ۴) پاک‌سازی کامنت‌های قبلی — همیشه، ولی در انتها تا سرعت حفظ شود ----
     if my_comments:
         to_delete = list(my_comments)
         my_comments.clear()
@@ -599,22 +609,6 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
             print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
             asyncio.create_task(delete_now(old_chat, old_msg))
 
-    print(
-        f"[ROOT DETECTED] chat={chat_id} root={root_message_id} "
-        f"source_channel={source_channel_id} known_count={known_count} via={source}",
-        flush=True,
-    )
-
-    # A root seen late may already have comments. Do not wait for an update that
-    # happened before this runner connected.
-    if known_count is not None and known_count >= 1:
-        await reserve_and_send_comment(chat_id, root_message_id, "root-already-has-replies")
-        return
-
-    waiting_roots[root_key] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
-    thread_watchers[root_key] = asyncio.create_task(
-        watch_discussion_root(chat_id, root_message_id)
-    )
 
 
 @app.on_message(filters.chat(list(DISCUSSION_SOURCE_CHANNELS)) & ~filters.outgoing)
