@@ -50,6 +50,8 @@ TRIGGER_WORDS = {
 COMMENT_TEXT = "🦦🦦"
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "1.0"))
+MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "30"))
 PROFILE_REVERT_SECONDS = 600             # ۱۰ دقیقه بعد از آخرین پست -> برگشت به Maya
 ADMIN_NOTIFY_MIN = 10                    # ۱۰ ثانیه بعد از کامنت
 ADMIN_NOTIFY_MAX = 30                    # ۳۰ ثانیه بعد از کامنت
@@ -72,7 +74,7 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "⒜⒨⒤⒭⒜⒧⒤"
+PROFILE_AMIRALI_NAME = "𝑩𝒍𝒂𝒄𝒌 𝑳𝒖𝒏𝒈 𝑴𝒐𝒓𝒈𝒂𝒏"
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""
@@ -89,6 +91,9 @@ app = Client(
 peer_cache = {}
 last_seen_channel_post = {}   # chat -> آخرین پست دیده‌شده
 comment_attempted = set()     # (chat, root_id) — ددپلیکیت: فقط یک بار
+comment_sent_times = []
+decided_roots = set()
+declined_roots = set()
 waiting_roots = {}
 thread_watchers = {}
 recently_mapped = {}
@@ -206,7 +211,7 @@ async def apply_profile_amirali():
         await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
         profile_mode = "amirali"
-        print("[PROFILE -> AmirAli] name=⒜⒨⒤⒭⒜⒧⒤ photo=hidden bio=hidden", flush=True)
+        print("[PROFILE -> AmirAli] name=𝑩𝒍𝒂𝒄𝒌 𝑳𝒖𝒏𝒈 𝑴𝒐𝒓𝒈𝒂𝒏 photo=hidden bio=hidden", flush=True)
     except Exception as exc:
         print(f"[PROFILE AMIRALI ERROR] {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -274,6 +279,34 @@ async def profile_watchdog():
         await asyncio.sleep(10)
 
 
+
+def comments_in_last_hour() -> int:
+    now = time.monotonic()
+    while comment_sent_times and now - comment_sent_times[0] > 3600:
+        comment_sent_times.pop(0)
+    return len(comment_sent_times)
+
+
+def ensure_decision(root_key, source=""):
+    """تصمیم main5-استایل: همان لحظهٔ شناسایی ریشه، یک بار و برای همیشه.
+    اگر بله باشد هویت همین لحظه (قبل از هر کامنت) به Black Lung Morgan می‌رود."""
+    if root_key in decided_roots:
+        return root_key not in declined_roots
+    decided_roots.add(root_key)
+    if random.random() > COMMENT_CHANCE:
+        declined_roots.add(root_key)
+        print(f"[COMMENT DECIDED NO (chance)] {root_key} chance={COMMENT_CHANCE} via={source}", flush=True)
+        return False
+    if comments_in_last_hour() >= MAX_COMMENTS_PER_HOUR:
+        declined_roots.add(root_key)
+        print(f"[COMMENT DECIDED NO (rate-limit)] {root_key} already {MAX_COMMENTS_PER_HOUR}/hour", flush=True)
+        return False
+    print(f"[COMMENT DECIDED YES] {root_key} via={source}", flush=True)
+    # هویت پیش از کامنت، فوری
+    asyncio.create_task(apply_profile_amirali())
+    return True
+
+
 async def send_comment(chat_id: int, root_message_id: int):
     """کامنت 🦦🦦 روی ریشه + نوتیف ادمین + تغییر هویت به AmirAli."""
     global last_post_detected
@@ -293,16 +326,8 @@ async def send_comment(chat_id: int, root_message_id: int):
         last_post_detected = time.monotonic()
         asyncio.create_task(notify_admin_delayed())
 
-        # چک واقعی از سرور: فقط اگر واقعاً AmirAli نیست، تغییر بده
-        is_amirali = await current_profile_is_amirali()
-        if is_amirali is False:
-            await apply_profile_amirali()
-        elif is_amirali is True:
-            print("[PROFILE] already AmirAli (verified via get_me)", flush=True)
-        else:
-            # خطای get_me — fallback به حافظه
-            if profile_mode != "amirali":
-                await apply_profile_amirali()
+        comment_sent_times.append(time.monotonic())
+        # هویت قبلاً در لحظهٔ تصمیم (قبل از کامنت) سوییچ شده است
     except FloodWait as exc:
         print(f"[COMMENT FLOOD] wait={exc.value}s", flush=True)
         await asyncio.sleep(exc.value + 1)
@@ -335,6 +360,31 @@ async def reserve_and_send(chat_id: int, root_message_id: int, reason: str):
     await send_comment(chat_id, root_message_id)
 
 
+async def get_replies_count(chat_id: int, root_message_id: int) -> int:
+    """تعداد کامنت‌های ریشه را از روی خود پیام می‌خواند (نه GetReplies که MSG_ID_INVALID می‌داد)."""
+    try:
+        peer, channel = await get_channel_peers(chat_id)
+        result = await app.invoke(
+            raw.functions.channels.GetMessages(
+                channel=channel, id=[raw.types.InputMessageID(id=root_message_id)]
+            )
+        )
+        msgs = getattr(result, "messages", [])
+        if msgs:
+            m = msgs[0]
+            if isinstance(m, raw.types.Message):
+                reps = getattr(m, "replies", None)
+                if reps is not None:
+                    return int(getattr(reps, "replies", 0) or 0)
+                return 0
+    except FloodWait:
+        raise
+    except Exception as exc:
+        print(f"[COUNT READ ERROR] {chat_id}/{root_message_id}: {exc!r} — fallback GetReplies", flush=True)
+        return await app.get_discussion_replies_count(chat_id, root_message_id)
+    return 0
+
+
 async def watch_discussion_root(chat_id: int, root_message_id: int):
     """صبر می‌کند تا حداقل یک کامنت بیرونی بیاید (دوم/سوم شدن)، بعد کامنت می‌گذارد."""
     root_key = (chat_id, root_message_id)
@@ -346,7 +396,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
             if root_key in comment_attempted:
                 return
             try:
-                count = await app.get_discussion_replies_count(chat_id, root_message_id)
+                count = await get_replies_count(chat_id, root_message_id)
                 if count != last_count:
                     print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
                     last_count = count
@@ -375,12 +425,12 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                         except Exception as memb_exc:
                             print(f"[GIVEUP MEMBER PROBE ERROR] {memb_exc!r}", flush=True)
                         return
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(1)
                     continue
                 invalid_hits = 0
                 if "FLOOD_WAIT" in repr(exc):
                     await asyncio.sleep(5)
-            await asyncio.sleep(4)
+            await asyncio.sleep(1.5)
         waiting_roots.pop(root_key, None)
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
     finally:
@@ -396,8 +446,8 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
         if key in recently_mapped and now - recently_mapped[key] < 120:
             return True
 
-        max_retries = 3
-        for attempt in range(max_retries):
+        root = None
+        for attempt in range(10):
             try:
                 root = await app.get_discussion_message(source_chat_id, source_message_id)
                 break
@@ -405,9 +455,16 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
                 wait = exc.value + 1
                 print(f"[MAP FLOOD] {key} wait={wait}s attempt={attempt + 1}", flush=True)
                 await asyncio.sleep(wait)
-        else:
-            print(f"[MAP FAILED] {key} — retry next cycle", flush=True)
-            return False
+            except Exception as exc:
+                if "MSG_ID_INVALID" in repr(exc):
+                    await asyncio.sleep(0.8)
+                    continue
+                print(f"[MAP ERR RETRY] {key} attempt={attempt + 1}: {exc!r}", flush=True)
+                return False
+        if root is None:
+            print(f"[MAP SKIP PERMANENT] {key} after 10 retries", flush=True)
+            recently_mapped[key] = now
+            return True
 
         discussion_chat_id = root.chat.id
         if discussion_chat_id not in COMMENT_GROUPS:
@@ -421,6 +478,8 @@ async def observe_channel_post_discussion(source_chat_id: int, source_message_id
 
         root_key = (discussion_chat_id, root.id)
         if root_key in comment_attempted or root_key in thread_watchers:
+            return True
+        if not ensure_decision(root_key, "channel-map"):
             return True
         waiting_roots[root_key] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
         thread_watchers[root_key] = asyncio.create_task(
@@ -491,6 +550,29 @@ async def on_raw_update(client, update, users, chats):
                 last_post_detected = time.monotonic()
                 asyncio.create_task(observe_channel_post_discussion(chat_id, message_id))
 
+        # ---- مسیر فوری: فوروارد خودکار پست کانال داخل گروه = ریشهٔ تازه (بدون هیچ RPC) ----
+        if chat_id in COMMENT_GROUPS:
+            _fwd = getattr(message, "fwd_from", None)
+            if isinstance(_fwd, raw.types.MessageFwdHeader):
+                _from_id = getattr(_fwd, "from_id", None)
+                if isinstance(_from_id, PeerChannel):
+                    _src = chat_id_from_channel_id(_from_id.channel_id)
+                    if _src in SOURCE_CHANNELS:
+                        _rk = (chat_id, message_id)
+                        if (
+                            _rk not in comment_attempted
+                            and _rk not in thread_watchers
+                            and ensure_decision(_rk, "raw-fwd-root")
+                        ):
+                            _cpost = getattr(_fwd, "channel_post", None) or 0
+                            print(f"[RAW FWD ROOT] {chat_id}/{message_id} from={_src}/{_cpost}", flush=True)
+                            last_post_detected = time.monotonic()
+                            last_seen_channel_post[_src] = max(last_seen_channel_post.get(_src, 0), _cpost)
+                            waiting_roots[_rk] = time.monotonic() + WAIT_FOR_FIRST_COMMENT
+                            thread_watchers[_rk] = asyncio.create_task(
+                                watch_discussion_root(chat_id, message_id)
+                            )
+
         # ---- خود-حذفی: اگر کسی با کلمه تریگر به پیام ما ریپلی کرد، پاک کن ----
         if chat_id not in DELETE_GROUPS:
             return
@@ -505,6 +587,20 @@ async def on_raw_update(client, update, users, chats):
             my_messages[chat_id].add(message_id)
             print(f"[MY MESSAGE] {chat_id}/{message_id}", flush=True)
             return
+
+        # ---- مسیر سریع «کامنت دوم»: اولین کامنت بیرونی روی ریشهٔ منتظر → همین لحظه بفرست ----
+        _rh = getattr(message, "reply_to", None)
+        _rid = getattr(_rh, "reply_to_msg_id", None) if _rh else None
+        _tid = getattr(_rh, "reply_to_top_id", None) if _rh else None
+        _fast_root = _tid or _rid
+        if _fast_root:
+            _fk = (chat_id, _fast_root)
+            if _fk in waiting_roots and _fk not in comment_attempted:
+                comment_attempted.add(_fk)
+                waiting_roots.pop(_fk, None)
+                print(f"[FAST PATH] external reply on {_fk} -> comment NOW", flush=True)
+                asyncio.create_task(send_comment(chat_id, _fast_root))
+                return
 
         reply_header = getattr(message, "reply_to", None)
         replied_id = getattr(reply_header, "reply_to_msg_id", None) if reply_header else None
