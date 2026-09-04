@@ -88,6 +88,15 @@ COMMENT_WEIGHTS = [
     1,  # 😕😕
     3,  # حق — شانس ۳ برابر بقیه
 ]
+# اگر env بدهند فقط همان یک متن کامنت استفاده می‌شود
+_custom_comment_text = os.getenv("COMMENT_TEXT", "").strip()
+if _custom_comment_text:
+    COMMENT_TEXTS = [_custom_comment_text]
+    COMMENT_WEIGHTS = [1]
+
+# هدف: Nاُمین کامنت شدن (پیش‌فرض ۲ = کامنت دوم) — صبر می‌کند تا N-1 کامنت بیرونی بیاید
+TARGET_COMMENT_POSITION = int(os.getenv("TARGET_COMMENT_POSITION", "2"))
+WATCH_TRIGGER_COUNT = TARGET_COMMENT_POSITION - 1
 # احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.85"))
 
@@ -428,7 +437,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                 if count != last_count:
                     print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
                     last_count = count
-                if count >= 1:
+                if count >= WATCH_TRIGGER_COUNT:
                     await send_comment_direct(chat_id, root_message_id, "watcher-count")
                     return
             except Exception as exc:
@@ -598,7 +607,7 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
         # ---- ۲) هویت فوراً عوض شود (قبل از هر کامنت) ----
         asyncio.create_task(apply_profile_amirali())
         # ---- ۳) الگوریتم کامنت ----
-        if known_count is not None and known_count >= 1:
+        if known_count is not None and known_count >= WATCH_TRIGGER_COUNT:
             # پست را دیر دیده‌ایم و از قبل کامنت دارد → همان لحظه بفرست (می‌شود دومیِ بعدی)
             await send_comment_direct(chat_id, root_message_id, "root-already-has-replies")
         else:
@@ -730,7 +739,7 @@ async def on_raw_update(client, update, users, chats):
                             flush=True,
                         )
 
-                    if sample_key in waiting_roots and sample_key not in comment_sent:
+                    if sample_key in waiting_roots and sample_key not in comment_sent and WATCH_TRIGGER_COUNT <= 1:
                         await send_comment_direct(chat_id, candidate_root_id, "raw-external-reply")
                     elif sample_key not in recovery_checked:
                         recovery_checked.add(sample_key)
