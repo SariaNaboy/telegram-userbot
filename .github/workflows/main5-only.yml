@@ -31,7 +31,9 @@ jobs:
           SESSION_STRING: ${{ secrets.SESSION_STRING5 }}
           PYTHONUNBUFFERED: "1"
           admin_username: ${{ secrets.admin_username }}
-          # --- تنظیمات محافظه‌کارانه برای اکانت حساس ---
-          COMMENT_CHANCE: "0.85"         # شانس کامنت‌گذاری — درخواست کاربر: برگشت به پیش‌فرض
+          # --- تنظیمات main5 (درخواست کاربر: ششم شدن + وای + ۱۰۰٪) ---
+          COMMENT_CHANCE: "1.0"          # هر پست = کامنت
+          COMMENT_TEXT: "وای"            # تنها متن کامنت
+          TARGET_COMMENT_POSITION: "6"   # کامنت ششم شدن
           MAX_COMMENTS_PER_HOUR: "3"     # سقف ساعتی نصفِ پیش‌فرض (۶)
           SOURCE_POLL_INTERVAL: "30"     # پولینگ آرام‌تر (پیش‌فرض ۱۵ ثانیه)
