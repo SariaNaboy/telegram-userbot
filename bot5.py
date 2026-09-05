@@ -211,7 +211,7 @@ async def apply_profile_amirali():
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
         profile_mode = "amirali"
         print(
-            "[PROFILE -> AmirAli] name=AmirAli photo=hidden bio=hidden",
+            f"[PROFILE -> WANTED] name={PROFILE_AMIRALI_NAME!r} photo=hidden bio=hidden",
             flush=True,
         )
     except Exception as exc:
