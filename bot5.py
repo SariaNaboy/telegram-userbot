@@ -71,13 +71,7 @@ TRIGGER_WORDS = {
 # کامنت‌های متنوع (به‌جای یک متن تکراری — کاهش سیگنال اسپم)
 # کامنت‌ها: (متن, وزن) — «حق» وزن بیشتر دارد و بیشتر انتخاب می‌شود
 COMMENT_TEXTS = [
-    "😑😑",
-    "😐😐",
-    "🤐🤐",
-    "🫠🫠",
-    "🫤🫤",
-    "😕😕",
-    "حق",
+    "وای",
 ]
 COMMENT_WEIGHTS = [
     1,  # 😑😑
@@ -138,7 +132,7 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "𝑩𝒍𝒂𝒄𝒌 𝑳𝒖𝒏𝒈 𝑴𝒐𝒓𝒈𝒂𝒏"
+PROFILE_AMIRALI_NAME = "‌‌ ‌‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌𝐖𝗔𝐍T𝐄D‌ ‌ ‌‌ ‌‌"
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
