@@ -47,7 +47,7 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-COMMENT_TEXT = "🦦🦦"
+COMMENT_TEXT = "وای"
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "1.0"))     # شانس کامنت روی هر پست (۱.۰ = همیشه)
@@ -75,7 +75,7 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "𝑩𝒍𝒂𝒄𝒌 𝑳𝒖𝒏𝒈 𝑴𝒐𝒓𝒈𝒂𝒏"
+PROFILE_AMIRALI_NAME = "‌‌ ‌‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌𝐖𝗔𝐍T𝐄D‌ ‌ ‌‌ ‌‌"
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""
