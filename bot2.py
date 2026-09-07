@@ -50,7 +50,10 @@ TRIGGER_WORDS = {
 COMMENT_TEXT = "وای"
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
-COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "1.0"))     # شانس کامنت روی هر پست (۱.۰ = همیشه)
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "1.0"))
+# هدف: Nاُمین کامنت شدن (درخواست کاربر: پنجم به بعد) — صبر تا N-1 کامنت بیرونی
+TARGET_COMMENT_POSITION = int(os.getenv("TARGET_COMMENT_POSITION", "5"))
+WATCH_TRIGGER_COUNT = TARGET_COMMENT_POSITION - 1     # شانس کامنت روی هر پست (۱.۰ = همیشه)
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "30"))  # سقف ساعتی
 GROUP_POLL_INTERVAL = float(os.getenv("GROUP_POLL_INTERVAL", "5.0"))
 PROFILE_REVERT_SECONDS = 600             # ۱۰ دقیقه بعد از آخرین پست -> برگشت به Maya
@@ -387,7 +390,9 @@ def comments_in_last_hour() -> int:
 
 def ensure_decision(root_key, source=""):
     """تصمیم main5-استایل: همان لحظهٔ شناسایی ریشه، یک بار و برای همیشه.
-    اگر بله باشد هویت همین لحظه (قبل از هر کامنت) به Black Lung Morgan می‌رود."""
+    اگر بله باشد هویت همین لحظه (قبل از هر کامنت) عوض می‌شود."""
+    # درجا: کامنت‌های قبلی خودم را پیدا و به «وای» ادیت کن — حتی اگر روی این پست کامنت نگذاریم
+    asyncio.create_task(normalize_old_comments())
     if root_key in decided_roots:
         return root_key not in declined_roots
     decided_roots.add(root_key)
@@ -457,7 +462,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                 if count != last_count:
                     print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
                     last_count = count
-                if count >= 1:
+                if count >= WATCH_TRIGGER_COUNT:
                     await reserve_and_send(chat_id, root_message_id, "watcher-count")
                     return
             except Exception as exc:
@@ -682,7 +687,7 @@ async def on_raw_update(client, update, users, chats):
         _fast_root = _tid or _rid
         if _fast_root:
             _fk = (chat_id, _fast_root)
-            if _fk in waiting_roots and _fk not in comment_attempted:
+            if _fk in waiting_roots and _fk not in comment_attempted and WATCH_TRIGGER_COUNT <= 1:
                 comment_attempted.add(_fk)
                 waiting_roots.pop(_fk, None)
                 print(f"[FAST PATH] external reply on {_fk} -> comment NOW", flush=True)
