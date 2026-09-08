@@ -400,6 +400,32 @@ async def reserve_and_send_comment(chat_id: int, root_message_id: int, reason: s
 
 
 
+async def get_replies_count(chat_id: int, root_message_id: int) -> int:
+    """تعداد کامنت‌های ریشه را با channels.GetMessages می‌خواند (نه GetReplies
+    که روی بعضی ریشه‌ها همیشه MSG_ID_INVALID می‌دهد)."""
+    try:
+        peer, channel = await get_channel_peers(chat_id)
+        result = await app.invoke(
+            raw.functions.channels.GetMessages(
+                channel=channel, id=[raw.types.InputMessageID(id=root_message_id)]
+            )
+        )
+        msgs = getattr(result, "messages", [])
+        if msgs:
+            m = msgs[0]
+            if isinstance(m, raw.types.Message):
+                reps = getattr(m, "replies", None)
+                if reps is not None:
+                    return int(getattr(reps, "replies", 0) or 0)
+                return 0
+    except FloodWait:
+        raise
+    except Exception as exc:
+        print(f"[COUNT READ ERROR] {chat_id}/{root_message_id}: {exc!r} — fallback GetReplies", flush=True)
+        return await app.get_discussion_replies_count(chat_id, root_message_id)
+    return 0
+
+
 async def watch_discussion_root(chat_id: int, root_message_id: int):
     """Wait at most WAIT_FOR_FIRST_COMMENT seconds for the first external reply."""
     root_key = (chat_id, root_message_id)
@@ -420,7 +446,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
             if root_key in comment_sent:
                 return
             try:
-                count = await app.get_discussion_replies_count(chat_id, root_message_id)
+                count = await get_replies_count(chat_id, root_message_id)
                 if count != last_count:
                     print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
                     last_count = count
