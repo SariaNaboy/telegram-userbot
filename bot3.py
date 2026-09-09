@@ -79,7 +79,7 @@ TRIGGER_WORDS = {
 }
 # تنها کامنت bot3: 🦦🦦
 COMMENT_TEXTS = [
-    "🦦🦦",
+    "وای",
 ]
 COMMENT_WEIGHTS = [
     1,
