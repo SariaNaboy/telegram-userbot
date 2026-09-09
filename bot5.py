@@ -73,15 +73,7 @@ TRIGGER_WORDS = {
 COMMENT_TEXTS = [
     "وای",
 ]
-COMMENT_WEIGHTS = [
-    1,  # 😑😑
-    1,  # 😐😐
-    1,  # 🤐🤐
-    1,  # 🫠🫠
-    1,  # 🫤🫤
-    1,  # 😕😕
-    3,  # حق — شانس ۳ برابر بقیه
-]
+COMMENT_WEIGHTS = [1]
 # احتمال گذاشتن کامنت (۰.۷۵ = ۷۵٪)؛ ۲۵٪ مواقع عمداً کامنت نمی‌گذاریم
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.85"))
 
