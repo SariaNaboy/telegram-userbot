@@ -47,10 +47,19 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-COMMENT_TEXT = "وای"
+COMMENT_TEXTS = [
+    "چرا پاک کردی🫤",
+    "پاک کرد😂",
+    "پاک نکن",
+    "نه",
+]
+
+
+def pick_comment_text() -> str:
+    return random.choice(COMMENT_TEXTS)
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
-COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "1.0"))
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.6"))
 # هدف: Nاُمین کامنت شدن (درخواست کاربر: پنجم به بعد) — صبر تا N-1 کامنت بیرونی
 TARGET_COMMENT_POSITION = int(os.getenv("TARGET_COMMENT_POSITION", "5"))
 WATCH_TRIGGER_COUNT = TARGET_COMMENT_POSITION - 1     # شانس کامنت روی هر پست (۱.۰ = همیشه)
@@ -78,7 +87,14 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "‌‌ ‌‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌𝐖𝗔𝐍T𝐄D‌ ‌ ‌‌ ‌‌"
+PROFILE_NAMES = [
+    "𝔣𝔞𝔣𝔞𝔯𝔱𝔦𝔱𝔦",
+    "丂卄ΛŁ丨ҠØИӾ",
+    "𝔇𝔞𝔯𝔨_𝔇𝔯𝔢𝔞𝔪",
+    "Чάşάмάή",
+    "M𝙼dℝ",
+]
+current_random_name = None
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""
@@ -210,13 +226,16 @@ async def set_privacy_rule(key, allow_all: bool):
 
 
 async def apply_profile_amirali():
-    global profile_mode
+    global profile_mode, current_random_name
     try:
-        await app.update_profile(first_name=PROFILE_AMIRALI_NAME)
+        candidates = [n for n in PROFILE_NAMES if n != current_random_name] or PROFILE_NAMES
+        name = random.choice(candidates)
+        await app.update_profile(first_name=name)
         await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
+        current_random_name = name
         profile_mode = "amirali"
-        print(f"[PROFILE -> WANTED] name={PROFILE_AMIRALI_NAME!r} photo=hidden bio=hidden", flush=True)
+        print(f"[PROFILE -> RANDOM] name={name!r} photo=hidden bio=hidden", flush=True)
     except Exception as exc:
         print(f"[PROFILE AMIRALI ERROR] {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -246,7 +265,7 @@ async def current_profile_is_amirali():
     try:
         me = await app.get_me()
         name = (me.first_name or "")
-        is_amirali = (name == PROFILE_AMIRALI_NAME)
+        is_amirali = (name in PROFILE_NAMES)
         print(
             f"[GET_ME] actual_name={name!r} is_amirali={is_amirali}",
             flush=True,
@@ -298,13 +317,14 @@ async def _normalize_old_comments_inner():
                 total_mine += 1
                 try:
                     text = getattr(item, "text", None)
-                    if text is None or text == COMMENT_TEXT:
+                    if text is None or text in COMMENT_TEXTS:
                         skipped += 1
                         continue
                     try:
-                        await app.edit_message_text(chat_id, item.id, COMMENT_TEXT)
+                        new_text = pick_comment_text()
+                        await app.edit_message_text(chat_id, item.id, new_text)
                         edited += 1
-                        print(f"[NORMALIZED] {chat_id}/{item.id} -> {COMMENT_TEXT}", flush=True)
+                        print(f"[NORMALIZED] {chat_id}/{item.id} -> {new_text}", flush=True)
                         await asyncio.sleep(1)  # آروم، ضد flood
                     except FloodWait as exc:
                         print(f"[NORMALIZE FLOOD] wait={exc.value}s", flush=True)
@@ -339,12 +359,13 @@ async def send_comment(chat_id: int, root_message_id: int):
     """کامنت 🦦🦦 روی ریشه + نوتیف ادمین + تغییر هویت به AmirAli."""
     global last_post_detected
     try:
+        comment_text = pick_comment_text()
         peer, _ = await get_channel_peers(chat_id)
-        print(f"[COMMENT ATTEMPT] chat={chat_id} root={root_message_id} text={COMMENT_TEXT!r}", flush=True)
+        print(f"[COMMENT ATTEMPT] chat={chat_id} root={root_message_id} text={comment_text!r}", flush=True)
         result = await app.invoke(
             raw.functions.messages.SendMessage(
                 peer=peer,
-                message=COMMENT_TEXT,
+                message=comment_text,
                 random_id=secrets.randbits(63),
                 reply_to_msg_id=root_message_id,
                 no_webpage=True,
@@ -366,13 +387,13 @@ async def send_comment(chat_id: int, root_message_id: int):
             await app.invoke(
                 raw.functions.messages.SendMessage(
                     peer=peer,
-                    message=COMMENT_TEXT,
+                    message=comment_text,
                     random_id=secrets.randbits(63),
                     reply_to_msg_id=root_message_id,
                     no_webpage=True,
                 )
             )
-            print(f"[COMMENT SENT AFTER FLOOD] chat={chat_id} root={root_message_id}", flush=True)
+            print(f"[COMMENT SENT AFTER FLOOD] chat={chat_id} root={root_message_id} text={comment_text!r}", flush=True)
         except Exception as retry_exc:
             print(f"[COMMENT RETRY ERROR] {chat_id}/{root_message_id}: {retry_exc!r}", flush=True)
     except Exception as exc:
