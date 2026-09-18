@@ -31,9 +31,8 @@ jobs:
           SESSION_STRING: ${{ secrets.SESSION_STRING5 }}
           PYTHONUNBUFFERED: "1"
           admin_username: ${{ secrets.admin_username }}
-          # --- تنظیمات main5 (درخواست کاربر: ششم شدن + وای + ۱۰۰٪) ---
+          # --- تنظیمات main5 (ششم شدن + متن‌های رندوم + ۱۰۰٪) ---
           COMMENT_CHANCE: "1.0"          # هر پست = کامنت
-          COMMENT_TEXT: "وای"            # تنها متن کامنت
           TARGET_COMMENT_POSITION: "6"   # کامنت ششم شدن
-          MAX_COMMENTS_PER_HOUR: "3"     # سقف ساعتی نصفِ پیش‌فرض (۶)
+          MAX_COMMENTS_PER_HOUR: "30"    # سقف ۳ بات را ساعت‌ها ساکت می‌کرد -> ۳۰
           SOURCE_POLL_INTERVAL: "8"      # سریع برای پوزیشن ۶
