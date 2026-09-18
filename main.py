@@ -68,31 +68,13 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-# کامنت‌های متنوع (به‌جای یک متن تکراری — کاهش سیگنال اسپم)
-# کامنت‌ها: (متن, وزن) — «حق» وزن بیشتر دارد و بیشتر انتخاب می‌شود
+# کامنت‌های رندوم (درخواست کاربر: لیست متن‌ها به‌جز «نه»)
 COMMENT_TEXTS = [
-    "😑😑",
-    "😐😐",
-    "🤐🤐",
-    "🫠🫠",
-    "🫤🫤",
-    "😕😕",
-    "حق",
+    "چرا پاک کردی🫤",
+    "پاک کرد😂",
+    "پاک نکن",
 ]
-COMMENT_WEIGHTS = [
-    1,  # 😑😑
-    1,  # 😐😐
-    1,  # 🤐🤐
-    1,  # 🫠🫠
-    1,  # 🫤🫤
-    1,  # 😕😕
-    3,  # حق — شانس ۳ برابر بقیه
-]
-# اگر env بدهند فقط همان یک متن کامنت استفاده می‌شود
-_custom_comment_text = os.getenv("COMMENT_TEXT", "").strip()
-if _custom_comment_text:
-    COMMENT_TEXTS = [_custom_comment_text]
-    COMMENT_WEIGHTS = [1]
+COMMENT_WEIGHTS = [1, 1, 1]
 
 # هدف: Nاُمین کامنت شدن (پیش‌فرض ۲ = کامنت دوم) — صبر می‌کند تا N-1 کامنت بیرونی بیاید
 TARGET_COMMENT_POSITION = int(os.getenv("TARGET_COMMENT_POSITION", "2"))
@@ -147,7 +129,14 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_AMIRALI_NAME = "𝑩𝒍𝒂𝒄𝒌 𝑳𝒖𝒏𝒈 𝑴𝒐𝒓𝒈𝒂𝒏"
+PROFILE_NAMES = [
+    "𝔣𝔞𝔣𝔞𝔯𝔱𝔦𝔱𝔦",
+    "丂卄ΛŁ丨ҠØИӾ",
+    "𝔇𝔞𝔯𝔨_𝔇𝔯𝔢𝔞𝔪",
+    "Чάşάмάή",
+    "M𝙼dℝ",
+]
+current_random_name = None
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
@@ -218,15 +207,18 @@ async def set_privacy_rule(key, allow_all: bool):
 
 
 async def apply_profile_amirali():
-    """هویت AmirAli: نام + مخفی‌کردن عکس و بیو از همه."""
-    global profile_mode
+    """هویت رندوم: یکی از PROFILE_NAMES (بدون تکرار پشت‌سرهم) + مخفی‌کردن عکس و بیو."""
+    global profile_mode, current_random_name
     try:
-        await app.update_profile(first_name=PROFILE_AMIRALI_NAME)
+        candidates = [n for n in PROFILE_NAMES if n != current_random_name] or PROFILE_NAMES
+        name = random.choice(candidates)
+        await app.update_profile(first_name=name)
         await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
         await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
+        current_random_name = name
         profile_mode = "amirali"
         print(
-            f"[PROFILE -> WANTED] name={PROFILE_AMIRALI_NAME!r} photo=hidden bio=hidden",
+            f"[PROFILE -> RANDOM] name={name!r} photo=hidden bio=hidden",
             flush=True,
         )
     except Exception as exc:
@@ -390,7 +382,27 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
         else:
             print("[PROFILE] already AmirAli — timer reset", flush=True)
     except FloodWait as exc:
-        print(f"[COMMENT SKIPPED: FLOOD {exc.value}s] {chat_id}/{root_message_id}", flush=True)
+        print(f"[COMMENT FLOOD] wait={exc.value}s — retry after wait {chat_id}/{root_message_id}", flush=True)
+        await asyncio.sleep(exc.value + 1)
+        try:
+            peer, _ = await get_channel_peers(chat_id)
+            result = await app.invoke(
+                raw.functions.messages.SendMessage(
+                    peer=peer,
+                    message=random.choices(COMMENT_TEXTS, weights=COMMENT_WEIGHTS, k=1)[0],
+                    random_id=secrets.randbits(63),
+                    reply_to_msg_id=root_message_id,
+                    no_webpage=True,
+                )
+            )
+            print(f"[COMMENT SENT AFTER FLOOD] chat={chat_id} root={root_message_id}", flush=True)
+            sent_id = extract_sent_msg_id(result)
+            if sent_id:
+                my_comments.append((chat_id, sent_id))
+                del my_comments[:-MAX_TRACKED_COMMENTS]
+            asyncio.create_task(notify_admin_delayed())
+        except Exception as retry_exc:
+            print(f"[COMMENT RETRY ERROR] {chat_id}/{root_message_id}: {retry_exc!r}", flush=True)
     except Exception as exc:
         print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -861,8 +873,7 @@ async def poll_new_discussion_roots():
                             last_seen_group_message.get(chat_id, 0), item.id
                         )
                         fwd = getattr(item, "forward_from_chat", None)
-                        if fwd is not None and getattr(fwd, "id", None) in DISCUSSION_SOURCE_CHANNELS \
-                                and getattr(item, "replies", None) is not None:
+                        if fwd is not None and getattr(fwd, "id", None) in DISCUSSION_SOURCE_CHANNELS:
                             print(f"[POLL GROUP ROOT] {chat_id}/{item.id} fwd={fwd.id}", flush=True)
                             replies_obj = getattr(item, "replies", None)
                             reply_count = getattr(replies_obj, "replies", None) if replies_obj else None
