@@ -33,6 +33,7 @@ jobs:
           admin_username: ${{ secrets.admin_username }}
           # --- تنظیمات main5 (ششم شدن + متن‌های رندوم + ۱۰۰٪) ---
           COMMENT_CHANCE: "1.0"          # هر پست = کامنت
+          COMMENT_EVERY_N: "2"           # یک پست در میان
           TARGET_COMMENT_POSITION: "6"   # کامنت ششم شدن
           MAX_COMMENTS_PER_HOUR: "30"    # سقف ۳ بات را ساعت‌ها ساکت می‌کرد -> ۳۰
           SOURCE_POLL_INTERVAL: "8"      # سریع برای پوزیشن ۶
