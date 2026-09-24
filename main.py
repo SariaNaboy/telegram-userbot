@@ -91,6 +91,9 @@ ADMIN_NOTIFY_WORDS = [
 ]
 # سقف کامنت در هر ساعت (محافظ ضداسپم؛ با env قابل تغییر)
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "6"))
+# یک پست در میان کامنت (۲ = روی ۱ از هر ۲ پست؛ دترمینیستیک، نه شانسی)
+COMMENT_EVERY_N = int(os.getenv("COMMENT_EVERY_N", "1"))
+_root_index = 0
 
 comment_sent_times = []   # timestamps کامنت‌های ارسال‌شده
 recently_mapped = {}    # (chat_id, msg_id) -> time.monotonic() — جلوگیری از get_discussion_message تکراری
@@ -213,12 +216,13 @@ async def apply_profile_amirali():
         candidates = [n for n in PROFILE_NAMES if n != current_random_name] or PROFILE_NAMES
         name = random.choice(candidates)
         await app.update_profile(first_name=name)
-        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
-        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
+        # درخواست کاربر: عکس و بیو هاید نمی‌شوند (اگر قبلاً هاید بود پابلیک برمی‌گردد)
+        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
+        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=True)
         current_random_name = name
         profile_mode = "amirali"
         print(
-            f"[PROFILE -> RANDOM] name={name!r} photo=hidden bio=hidden",
+            f"[PROFILE -> RANDOM] name={name!r} photo=public bio=public",
             flush=True,
         )
     except Exception as exc:
@@ -244,20 +248,9 @@ async def apply_profile_maya():
 
 
 async def profile_watchdog():
-    """اگر ۳۰ دقیقه از آخرین پست گذشت و پست جدیدی نیامد، به Maya برمی‌گردد."""
-    global profile_mode
+    """غیرفعال — درخواست کاربر: هرگز به Maya برنگرد؛ هویت رندوم همیشه می‌ماند."""
     while True:
-        try:
-            if (
-                profile_mode == "amirali"
-                and last_post_detected is not None
-                and time.monotonic() - last_post_detected >= PROFILE_REVERT_SECONDS
-            ):
-                print("[PROFILE TIMER] ۳۰ دقیقه بدون پست جدید -> بازگشت به Maya", flush=True)
-                await apply_profile_maya()
-        except Exception as exc:
-            print(f"[PROFILE WATCHDOG ERROR] {exc!r}", flush=True)
-        await asyncio.sleep(10)
+        await asyncio.sleep(3600)
 
 
 async def get_channel_peers(chat_id: int):
@@ -628,8 +621,13 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
     )
 
     # ---- ۱) تصمیم فوری ----
+    global _root_index
+    _root_index += 1
     decided_comment = True
-    if random.random() > COMMENT_CHANCE:
+    if COMMENT_EVERY_N > 1 and (_root_index - 1) % COMMENT_EVERY_N != 0:
+        decided_comment = False
+        print(f"[COMMENT DECIDED NO (every-{COMMENT_EVERY_N}th)] {root_key} idx={_root_index}", flush=True)
+    elif random.random() > COMMENT_CHANCE:
         decided_comment = False
         print(f"[COMMENT DECIDED NO (chance)] {root_key} chance={COMMENT_CHANCE}", flush=True)
     elif comments_in_last_hour() >= MAX_COMMENTS_PER_HOUR:
@@ -1007,7 +1005,6 @@ async def main():
         # ---- شروع پولینگ فعال ----
         asyncio.create_task(poll_new_channel_posts())
         asyncio.create_task(poll_new_discussion_roots())
-        asyncio.create_task(profile_watchdog())
 
         if ENABLE_STARTUP_RECOVERY:
             for chat_id in COMMENT_GROUPS:
