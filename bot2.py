@@ -47,25 +47,21 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-COMMENT_TEXTS = [
-    "چرا پاک کردی🫤",
-    "پاک کرد😂",
-    "پاک نکن",
-    "نه",
-]
-
-
-def pick_comment_text() -> str:
-    return random.choice(COMMENT_TEXTS)
+# متن‌ها (درخواست کاربر): کامنت «نکن» + ریپلی «نه» روی همان کامنت
+COMMENT_TEXT = "نکن"
+REPLY_TEXT = "نه"
+NORMALIZE_TARGET = "نه"            # ادیت پیام‌های نامطابق به این متن
+TARGET_BIO = "هیچکس کامل نیست."    # بیو — همیشه ست می‌شود
+VALID_OWN_TEXTS = {COMMENT_TEXT, REPLY_TEXT}
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
-COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.6"))
-# هدف: Nاُمین کامنت شدن (درخواست کاربر: پنجم به بعد) — صبر تا N-1 کامنت بیرونی
-TARGET_COMMENT_POSITION = int(os.getenv("TARGET_COMMENT_POSITION", "5"))
-WATCH_TRIGGER_COUNT = TARGET_COMMENT_POSITION - 1     # شانس کامنت روی هر پست (۱.۰ = همیشه)
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.3"))   # شانس کامنت: ۳۰٪
+# هدف: پوزیشن رندوم بین ۲ تا ۸ (به ازای هر پست) — صبر تا ۱..۷ کامنت بیرونی
+TRIG_MIN = 1   # پوزیشن ۲
+TRIG_MAX = 7   # پوزیشن ۸
+root_trigger_counts = {}   # root_key -> تعداد کامنت بیرونی لازم
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "30"))  # سقف ساعتی
 GROUP_POLL_INTERVAL = float(os.getenv("GROUP_POLL_INTERVAL", "5.0"))
-PROFILE_REVERT_SECONDS = 600             # ۱۰ دقیقه بعد از آخرین پست -> برگشت به Maya
 ADMIN_NOTIFY_MIN = 10                    # ۱۰ ثانیه بعد از کامنت
 ADMIN_NOTIFY_MAX = 30                    # ۳۰ ثانیه بعد از کامنت
 ADMIN_NOTIFY_WORDS = ["شد", "ثبت", "انجام", "اوکی", "رفت"]
@@ -226,18 +222,23 @@ async def set_privacy_rule(key, allow_all: bool):
 
 
 async def apply_profile_amirali():
+    """همیشه روی هر پست: اسم رندوم + بیو «هیچکس کامل نیست.»
+    هاید عکس فقط وقتی که بیو فعلی با بیو هدف فرق داشته باشد (درخواست کاربر)."""
     global profile_mode, current_random_name
     try:
+        full = await app.invoke(raw.functions.users.GetFullUser(id=raw.types.InputPeerSelf()))
+        current_bio = getattr(full.full_user, "about", "") or ""
+        bio_differs = current_bio != TARGET_BIO
         candidates = [n for n in PROFILE_NAMES if n != current_random_name] or PROFILE_NAMES
         name = random.choice(candidates)
-        await app.update_profile(first_name=name)
-        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
-        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=False)
+        await app.invoke(raw.functions.account.UpdateProfile(first_name=name, about=TARGET_BIO))
+        if bio_differs:
+            await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
         current_random_name = name
         profile_mode = "amirali"
-        print(f"[PROFILE -> RANDOM] name={name!r} photo=hidden bio=hidden", flush=True)
+        print(f"[PROFILE] name={name!r} bio={TARGET_BIO!r} prev_bio={current_bio!r} photo_hidden={bio_differs}", flush=True)
     except Exception as exc:
-        print(f"[PROFILE AMIRALI ERROR] {exc!r}", flush=True)
+        print(f"[PROFILE ERROR] {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
 
 
@@ -277,30 +278,9 @@ async def current_profile_is_amirali():
 
 
 async def profile_watchdog():
-    global profile_mode
+    """غیرفعال — درخواست کاربر: تغییر هویت به Maya هرگز انجام نشود."""
     while True:
-        try:
-            if (
-                profile_mode == "amirali"
-                and last_post_detected is not None
-                and time.monotonic() - last_post_detected >= PROFILE_REVERT_SECONDS
-            ):
-                # اول ببین الان واقعاً AmirAli است یا نه (شاید کاربر دستی عوض کرده باشد)
-                is_amirali = await current_profile_is_amirali()
-                if is_amirali is True:
-                    print(f"[PROFILE TIMER] {PROFILE_REVERT_SECONDS}s بدون پست جدید -> بازگشت به Maya", flush=True)
-                    await apply_profile_maya()
-                elif is_amirali is False:
-                    # کاربر دستی عوض کرده — فقط وضعیت حافظه را هماهنگ کن
-                    profile_mode = "maya"
-                    print("[PROFILE] already Maya (verified via get_me)", flush=True)
-                else:
-                    # خطای get_me — fallback به حافظه
-                    if profile_mode == "amirali":
-                        await apply_profile_maya()
-        except Exception as exc:
-            print(f"[PROFILE WATCHDOG ERROR] {exc!r}", flush=True)
-        await asyncio.sleep(10)
+        await asyncio.sleep(3600)
 
 
 _normalize_running = False
@@ -308,7 +288,7 @@ _normalize_running = False
 
 async def _normalize_old_comments_inner():
     """پیام‌های قبلی *خودم* را از سرور می‌گردد (search_messages با from_user=me)
-    و هر کدام که متنشان 🦦🦦 نیست به 🦦🦦 ادیت می‌کند.
+    و هر کدام که متنشان «نکن»/«نه» نیست به «نه» ادیت می‌کند — در هر پست جدید.
     این روش حتی به پیام‌های خیلی قدیمی‌تر هم می‌رسد — برخلاف اسکن history."""
     total_mine = edited = skipped = 0
     for chat_id in COMMENT_GROUPS | DELETE_GROUPS:
@@ -317,11 +297,11 @@ async def _normalize_old_comments_inner():
                 total_mine += 1
                 try:
                     text = getattr(item, "text", None)
-                    if text is None or text in COMMENT_TEXTS:
+                    if text is None or text in VALID_OWN_TEXTS:
                         skipped += 1
                         continue
                     try:
-                        new_text = pick_comment_text()
+                        new_text = NORMALIZE_TARGET
                         await app.edit_message_text(chat_id, item.id, new_text)
                         edited += 1
                         print(f"[NORMALIZED] {chat_id}/{item.id} -> {new_text}", flush=True)
@@ -355,11 +335,52 @@ async def normalize_old_comments():
         _normalize_running = False
 
 
+def extract_sent_msg_id(result):
+    """message id پیامی که تازه فرستادیم را از پاسخ raw استخراج می‌کند."""
+    for u in getattr(result, "updates", []) or []:
+        if isinstance(u, raw.types.UpdateMessageID):
+            return u.id
+        if isinstance(u, raw.types.UpdateNewChannelMessage):
+            m = u.message
+            if isinstance(m, raw.types.Message):
+                return m.id
+    return None
+
+
+async def reply_and_delete(chat_id: int, comment_id: int):
+    """۰.۲ تا ۰.۵ ثانیه بعد از کامنت «نکن»: ریپلی «نه» روی همان کامنت، سپس پاک‌کردن «نکن»."""
+    try:
+        delay = random.uniform(0.2, 0.5)
+        print(f"[REPLY SCHEDULED] {chat_id}/{comment_id} in {delay:.2f}s", flush=True)
+        await asyncio.sleep(delay)
+        peer, _ = await get_channel_peers(chat_id)
+        result = await app.invoke(
+            raw.functions.messages.SendMessage(
+                peer=peer,
+                message=REPLY_TEXT,
+                random_id=secrets.randbits(63),
+                reply_to_msg_id=comment_id,
+                no_webpage=True,
+            )
+        )
+        rid = extract_sent_msg_id(result)
+        if rid:
+            my_messages[chat_id].add(rid)
+        print(f"[REPLY SENT] {chat_id}/{comment_id} -> {REPLY_TEXT!r}", flush=True)
+    except Exception as exc:
+        print(f"[REPLY ERROR] {chat_id}/{comment_id}: {exc!r}", flush=True)
+    try:
+        await delete_now(chat_id, comment_id)
+        print(f"[COMMENT NAKON DELETED] {chat_id}/{comment_id}", flush=True)
+    except Exception as exc:
+        print(f"[DELETE COMMENT ERROR] {chat_id}/{comment_id}: {exc!r}", flush=True)
+
+
 async def send_comment(chat_id: int, root_message_id: int):
-    """کامنت 🦦🦦 روی ریشه + نوتیف ادمین + تغییر هویت به AmirAli."""
+    """کامنت «نکن» روی ریشه (پوزیشن ۲-۸ را واچر تعیین کرده) → ریپلی «نه» → پاک‌کردن «نکن»."""
     global last_post_detected
     try:
-        comment_text = pick_comment_text()
+        comment_text = COMMENT_TEXT
         peer, _ = await get_channel_peers(chat_id)
         print(f"[COMMENT ATTEMPT] chat={chat_id} root={root_message_id} text={comment_text!r}", flush=True)
         result = await app.invoke(
@@ -375,25 +396,34 @@ async def send_comment(chat_id: int, root_message_id: int):
         last_post_detected = time.monotonic()
         comment_sent_times.append(time.monotonic())
         asyncio.create_task(notify_admin_delayed())
-        # هویت قبلاً در لحظهٔ تصمیم (قبل از کامنت) سوییچ شده است
+        sent_id = extract_sent_msg_id(result)
+        if sent_id:
+            my_messages[chat_id].add(sent_id)
+            asyncio.create_task(reply_and_delete(chat_id, sent_id))
+        else:
+            print("[SENT ID MISSING] reply/delete skipped", flush=True)
 
-        # پیام‌های قبلی خودمان را به 🦦🦦 یکدست کن (در پس‌زمینه؛ هیچ خطایی بات را نمی‌کشد)
+        # پیام‌های قبلی خودمان را یکدست کن (در پس‌زمینه؛ هیچ خطایی بات را نمی‌کشد)
         asyncio.create_task(normalize_old_comments())
     except FloodWait as exc:
         print(f"[COMMENT FLOOD] wait={exc.value}s", flush=True)
         await asyncio.sleep(exc.value + 1)
         try:
             peer, _ = await get_channel_peers(chat_id)
-            await app.invoke(
+            result = await app.invoke(
                 raw.functions.messages.SendMessage(
                     peer=peer,
-                    message=comment_text,
+                    message=COMMENT_TEXT,
                     random_id=secrets.randbits(63),
                     reply_to_msg_id=root_message_id,
                     no_webpage=True,
                 )
             )
-            print(f"[COMMENT SENT AFTER FLOOD] chat={chat_id} root={root_message_id} text={comment_text!r}", flush=True)
+            print(f"[COMMENT SENT AFTER FLOOD] chat={chat_id} root={root_message_id}", flush=True)
+            sent_id = extract_sent_msg_id(result)
+            if sent_id:
+                my_messages[chat_id].add(sent_id)
+                asyncio.create_task(reply_and_delete(chat_id, sent_id))
         except Exception as retry_exc:
             print(f"[COMMENT RETRY ERROR] {chat_id}/{root_message_id}: {retry_exc!r}", flush=True)
     except Exception as exc:
@@ -411,12 +441,14 @@ def comments_in_last_hour() -> int:
 
 def ensure_decision(root_key, source=""):
     """تصمیم main5-استایل: همان لحظهٔ شناسایی ریشه، یک بار و برای همیشه.
-    اگر بله باشد هویت همین لحظه (قبل از هر کامنت) عوض می‌شود."""
-    # درجا: کامنت‌های قبلی خودم را پیدا و به «وای» ادیت کن — حتی اگر روی این پست کامنت نگذاریم
+    هویت (اسم+بیو+هاید شرطی) روی *هر* پست انجام می‌شود — چه کامنت بگذاریم چه نه."""
+    # درجا: پیام‌های قبلی خودم را پیدا و در صورت مغایرت به «نه» ادیت کن — در هر پست جدید
     asyncio.create_task(normalize_old_comments())
     if root_key in decided_roots:
         return root_key not in declined_roots
     decided_roots.add(root_key)
+    # هویت همیشه (درخواست کاربر: چه کامنت گذاشت چه نگذاشت)
+    asyncio.create_task(apply_profile_amirali())
     if random.random() > COMMENT_CHANCE:
         declined_roots.add(root_key)
         print(f"[COMMENT DECIDED NO (chance)] {root_key} chance={COMMENT_CHANCE} via={source}", flush=True)
@@ -425,9 +457,9 @@ def ensure_decision(root_key, source=""):
         declined_roots.add(root_key)
         print(f"[COMMENT DECIDED NO (rate-limit)] {root_key} already {MAX_COMMENTS_PER_HOUR}/hour", flush=True)
         return False
-    print(f"[COMMENT DECIDED YES] {root_key} via={source}", flush=True)
-    # هویت پیش از کامنت، فوری
-    asyncio.create_task(apply_profile_amirali())
+    trig = random.randint(TRIG_MIN, TRIG_MAX)
+    root_trigger_counts[root_key] = trig
+    print(f"[COMMENT DECIDED YES] {root_key} via={source} target_pos={trig + 1}", flush=True)
     return True
 
 
@@ -483,7 +515,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
                 if count != last_count:
                     print(f"[WATCHER COUNT] {root_key} count={count}", flush=True)
                     last_count = count
-                if count >= WATCH_TRIGGER_COUNT:
+                if count >= root_trigger_counts.get(root_key, TRIG_MIN):
                     await reserve_and_send(chat_id, root_message_id, "watcher-count")
                     return
             except Exception as exc:
@@ -518,6 +550,7 @@ async def watch_discussion_root(chat_id: int, root_message_id: int):
         print(f"[WATCHER TIMEOUT] {root_key}", flush=True)
     finally:
         thread_watchers.pop(root_key, None)
+        root_trigger_counts.pop(root_key, None)
 
 
 async def observe_channel_post_discussion(source_chat_id: int, source_message_id: int):
@@ -708,7 +741,7 @@ async def on_raw_update(client, update, users, chats):
         _fast_root = _tid or _rid
         if _fast_root:
             _fk = (chat_id, _fast_root)
-            if _fk in waiting_roots and _fk not in comment_attempted and WATCH_TRIGGER_COUNT <= 1:
+            if _fk in waiting_roots and _fk not in comment_attempted and root_trigger_counts.get(_fk, 99) <= 1:
                 comment_attempted.add(_fk)
                 waiting_roots.pop(_fk, None)
                 print(f"[FAST PATH] external reply on {_fk} -> comment NOW", flush=True)
@@ -775,7 +808,6 @@ async def main():
 
         asyncio.create_task(poll_source_channels())
         asyncio.create_task(poll_group_forwarded_roots())
-        asyncio.create_task(profile_watchdog())
         print("[BOT2 STARTED]", flush=True)
         await asyncio.Event().wait()
 
