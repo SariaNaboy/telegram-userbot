@@ -53,7 +53,7 @@ REPLY_TEXT = "نه"
 NORMALIZE_TARGET = "نه"            # ادیت پیام‌های نامطابق به این متن
 TARGET_BIO = "هیچکس کامل نیست."    # بیو — همیشه ست می‌شود
 VALID_OWN_TEXTS = {COMMENT_TEXT, REPLY_TEXT}
-WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "180"))  # تا ۳ دقیقه صبر برای دوم/سوم
+WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "900"))  # تریدهای این گروه یواش‌ان — ۱۵ دقیقه صبر
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.3"))   # شانس کامنت: ۳۰٪
 # هدف: پوزیشن رندوم بین ۲ تا ۸ (به ازای هر پست) — صبر تا ۱..۷ کامنت بیرونی
