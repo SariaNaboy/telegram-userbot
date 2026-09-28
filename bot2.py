@@ -48,11 +48,27 @@ TRIGGER_WORDS = {
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
 # متن‌ها (درخواست کاربر): کامنت «نکن» + ریپلی «نه» روی همان کامنت
-COMMENT_TEXT = "نکن"
-REPLY_TEXT = "نه"
-NORMALIZE_TARGET = "نه"            # ادیت پیام‌های نامطابق به این متن
-TARGET_BIO = "هیچکس کامل نیست."    # بیو — همیشه ست می‌شود
-VALID_OWN_TEXTS = {COMMENT_TEXT, REPLY_TEXT}
+# متن کامنت: کلمه‌ی دوحرفی فارسی رندوم از لیست ۱۰۰۰تایی جنریت‌شده — بعد از ۱-۳ ثانیه ادیت می‌شود
+FA_LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی"
+TWO_LETTER_WORDS = [a + b for a in FA_LETTERS for b in FA_LETTERS][:1000]  # ۳۲×۳۲=۱۰۲۴ → ۱۰۰۰تا
+EDIT_TEXT = "پاک نکن خر🫤"          # متن نهایی بعد از ادیت
+NORMALIZE_TARGET = EDIT_TEXT       # ادیت پیام‌های نامطابق به این متن
+PROFILE_NAME = "🦦Зара"                    # تنها اسم — همیشه به همین برمی‌گردد
+PROFILE_BIO = "ذهنی کبود از ضربه های افکار"  # تنها بیو — همیشه
+RANDOM_REPLY_MIN = 15 * 60         # حداقل فاصله‌ی ریپلی رندوم (۱۵ دقیقه)
+RANDOM_REPLY_MAX = 46 * 60         # حداکثر فاصله‌ی ریپلی رندوم (۴۶ دقیقه)
+VALID_OWN_TEXTS = {EDIT_TEXT, "نکن", "نه"}
+
+
+def is_valid_own_text(text: str) -> bool:
+    if text in VALID_OWN_TEXTS:
+        return True
+    # کلمات ۲-۳ حرفی خالص فارسی (کامنت‌های رندوم / ریپلی‌های رندوم) دست نمی‌خورند
+    return 1 <= len(text) <= 3 and all(c in FA_LETTERS for c in text)
+
+
+def random_three_letter_word() -> str:
+    return "".join(random.choice(FA_LETTERS) for _ in range(3))
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "900"))  # تریدهای این گروه یواش‌ان — ۱۵ دقیقه صبر
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
 COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.3"))   # شانس کامنت: ۳۰٪
@@ -83,14 +99,6 @@ class InputPrivacyKeyAbout(TLObject):
         return b.getvalue()
 
 
-PROFILE_NAMES = [
-    "𝔣𝔞𝔣𝔞𝔯𝔱𝔦𝔱𝔦",
-    "丂卄ΛŁ丨ҠØИӾ",
-    "𝔇𝔞𝔯𝔨_𝔇𝔯𝔢𝔞𝔪",
-    "Чάşάмάή",
-    "M𝙼dℝ",
-]
-current_random_name = None
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""
@@ -222,21 +230,23 @@ async def set_privacy_rule(key, allow_all: bool):
 
 
 async def apply_profile_amirali():
-    """همیشه روی هر پست: اسم رندوم + بیو «هیچکس کامل نیست.»
-    هاید عکس فقط وقتی که بیو فعلی با بیو هدف فرق داشته باشد (درخواست کاربر)."""
-    global profile_mode, current_random_name
+    """قبل از هر کامنت (و روی هر پست): هویت — حتی اگر دستی عوض شده باشد —
+    به 🦦Зара + «ذهنی کبود از ضربه های افکار» برمی‌گردد؛ بقیه‌ی پروفایل دست‌نخورده.
+    استثنای پروفایل: هاید عکس فقط وقتی که بیو فعلی ≠ بیو هدف باشد."""
+    global profile_mode
     try:
+        me = await app.get_me()
         full = await app.invoke(raw.functions.users.GetFullUser(id=raw.types.InputPeerSelf()))
+        current_name = (me.first_name or "")
         current_bio = getattr(full.full_user, "about", "") or ""
-        bio_differs = current_bio != TARGET_BIO
-        candidates = [n for n in PROFILE_NAMES if n != current_random_name] or PROFILE_NAMES
-        name = random.choice(candidates)
-        await app.invoke(raw.functions.account.UpdateProfile(first_name=name, about=TARGET_BIO))
+        bio_differs = current_bio != PROFILE_BIO
+        drifted = current_name != PROFILE_NAME or bio_differs
+        if drifted:
+            await app.invoke(raw.functions.account.UpdateProfile(first_name=PROFILE_NAME, about=PROFILE_BIO))
         if bio_differs:
             await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
-        current_random_name = name
         profile_mode = "amirali"
-        print(f"[PROFILE] name={name!r} bio={TARGET_BIO!r} prev_bio={current_bio!r} photo_hidden={bio_differs}", flush=True)
+        print(f"[PROFILE] name={PROFILE_NAME!r} bio={PROFILE_BIO!r} drifted={drifted} prev={current_name!r}/{current_bio!r} photo_hidden={bio_differs}", flush=True)
     except Exception as exc:
         print(f"[PROFILE ERROR] {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -266,7 +276,7 @@ async def current_profile_is_amirali():
     try:
         me = await app.get_me()
         name = (me.first_name or "")
-        is_amirali = (name in PROFILE_NAMES)
+        is_amirali = (name == PROFILE_NAME)
         print(
             f"[GET_ME] actual_name={name!r} is_amirali={is_amirali}",
             flush=True,
@@ -288,7 +298,8 @@ _normalize_running = False
 
 async def _normalize_old_comments_inner():
     """پیام‌های قبلی *خودم* را از سرور می‌گردد (search_messages با from_user=me)
-    و هر کدام که متنشان «نکن»/«نه» نیست به «نه» ادیت می‌کند — در هر پست جدید.
+    و هر کدام که نامطابق‌اند (نه «پاک نکن خر🫤» و نه کلمات ۲-۳ حرفی فارسی) به
+    «پاک نکن خر🫤» ادیت می‌کند — در هر پست جدید.
     این روش حتی به پیام‌های خیلی قدیمی‌تر هم می‌رسد — برخلاف اسکن history."""
     total_mine = edited = skipped = 0
     for chat_id in COMMENT_GROUPS | DELETE_GROUPS:
@@ -297,7 +308,7 @@ async def _normalize_old_comments_inner():
                 total_mine += 1
                 try:
                     text = getattr(item, "text", None)
-                    if text is None or text in VALID_OWN_TEXTS:
+                    if text is None or is_valid_own_text(text):
                         skipped += 1
                         continue
                     try:
@@ -347,40 +358,61 @@ def extract_sent_msg_id(result):
     return None
 
 
-async def reply_and_delete(chat_id: int, comment_id: int):
-    """۰.۲ تا ۰.۵ ثانیه بعد از کامنت «نکن»: ریپلی «نه» روی همان کامنت، سپس پاک‌کردن «نکن»."""
+_typing_flags = {}
+
+
+async def _typing_loop(chat_id: int):
+    """تا وقتی فلگ روشن است (تا پایان ادیت)، هر ۴ ثانیه اکشن typing می‌فرستد."""
+    while _typing_flags.get(chat_id):
+        try:
+            await app.send_chat_action(chat_id, "typing")
+        except Exception as exc:
+            print(f"[TYPING ERROR] {chat_id}: {exc!r}", flush=True)
+        await asyncio.sleep(4)
+
+
+def start_typing(chat_id: int):
+    if not _typing_flags.get(chat_id):
+        _typing_flags[chat_id] = True
+        asyncio.get_event_loop().create_task(_typing_loop(chat_id))
+
+
+def stop_typing(chat_id: int):
+    _typing_flags[chat_id] = False
+
+
+async def edit_comment_after_delay(chat_id: int, comment_id: int):
+    """۱ تا ۳ ثانیه بعد از کامنت: ادیت به «پاک نکن خر🫤» — typing تا همین‌جا روشن می‌ماند."""
     try:
-        delay = random.uniform(0.2, 0.5)
-        print(f"[REPLY SCHEDULED] {chat_id}/{comment_id} in {delay:.2f}s", flush=True)
+        delay = random.uniform(1, 3)
+        print(f"[EDIT SCHEDULED] {chat_id}/{comment_id} in {delay:.2f}s", flush=True)
         await asyncio.sleep(delay)
-        peer, _ = await get_channel_peers(chat_id)
-        result = await app.invoke(
-            raw.functions.messages.SendMessage(
-                peer=peer,
-                message=REPLY_TEXT,
-                random_id=secrets.randbits(63),
-                reply_to_msg_id=comment_id,
-                no_webpage=True,
-            )
-        )
-        rid = extract_sent_msg_id(result)
-        if rid:
-            my_messages[chat_id].add(rid)
-        print(f"[REPLY SENT] {chat_id}/{comment_id} -> {REPLY_TEXT!r}", flush=True)
-    except Exception as exc:
-        print(f"[REPLY ERROR] {chat_id}/{comment_id}: {exc!r}", flush=True)
-    try:
-        await delete_now(chat_id, comment_id)
-        print(f"[COMMENT NAKON DELETED] {chat_id}/{comment_id}", flush=True)
-    except Exception as exc:
-        print(f"[DELETE COMMENT ERROR] {chat_id}/{comment_id}: {exc!r}", flush=True)
+        try:
+            await app.edit_message_text(chat_id, comment_id, EDIT_TEXT)
+            print(f"[COMMENT EDITED] {chat_id}/{comment_id} -> {EDIT_TEXT!r}", flush=True)
+        except FloodWait as exc:
+            print(f"[EDIT FLOOD] wait={exc.value}s", flush=True)
+            await asyncio.sleep(exc.value + 1)
+            try:
+                await app.edit_message_text(chat_id, comment_id, EDIT_TEXT)
+                print(f"[COMMENT EDITED AFTER FLOOD] {chat_id}/{comment_id}", flush=True)
+            except Exception as retry_exc:
+                print(f"[EDIT RETRY ERROR] {chat_id}/{comment_id}: {retry_exc!r}", flush=True)
+        except Exception as exc:
+            print(f"[EDIT ERROR] {chat_id}/{comment_id}: {exc!r}", flush=True)
+    finally:
+        stop_typing(chat_id)
 
 
 async def send_comment(chat_id: int, root_message_id: int):
-    """کامنت «نکن» روی ریشه (پوزیشن ۲-۸ را واچر تعیین کرده) → ریپلی «نه» → پاک‌کردن «نکن»."""
+    """کلمه‌ی دوحرفی رندوم روی ریشه (پوزیشن ۲-۸ را واچر تعیین کرده) → typing تا پایان ادیت
+    → ادیت به «پاک نکن خر🫤» بعد از ۱-۳ ثانیه."""
     global last_post_detected
+    start_typing(chat_id)
     try:
-        comment_text = COMMENT_TEXT
+        # هویت دقیقاً قبل از کامنت به حالت هدف برمی‌گردد (حتی اگر دستی عوض شده باشد)
+        await apply_profile_amirali()
+        comment_text = random.choice(TWO_LETTER_WORDS)
         peer, _ = await get_channel_peers(chat_id)
         print(f"[COMMENT ATTEMPT] chat={chat_id} root={root_message_id} text={comment_text!r}", flush=True)
         result = await app.invoke(
@@ -399,11 +431,11 @@ async def send_comment(chat_id: int, root_message_id: int):
         sent_id = extract_sent_msg_id(result)
         if sent_id:
             my_messages[chat_id].add(sent_id)
-            asyncio.create_task(reply_and_delete(chat_id, sent_id))
+            asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
         else:
-            print("[SENT ID MISSING] reply/delete skipped", flush=True)
+            print("[SENT ID MISSING] edit skipped", flush=True)
+            stop_typing(chat_id)
 
-        # پیام‌های قبلی خودمان را یکدست کن (در پس‌زمینه؛ هیچ خطایی بات را نمی‌کشد)
         asyncio.create_task(normalize_old_comments())
     except FloodWait as exc:
         print(f"[COMMENT FLOOD] wait={exc.value}s", flush=True)
@@ -413,7 +445,7 @@ async def send_comment(chat_id: int, root_message_id: int):
             result = await app.invoke(
                 raw.functions.messages.SendMessage(
                     peer=peer,
-                    message=COMMENT_TEXT,
+                    message=random.choice(TWO_LETTER_WORDS),
                     random_id=secrets.randbits(63),
                     reply_to_msg_id=root_message_id,
                     no_webpage=True,
@@ -423,12 +455,16 @@ async def send_comment(chat_id: int, root_message_id: int):
             sent_id = extract_sent_msg_id(result)
             if sent_id:
                 my_messages[chat_id].add(sent_id)
-                asyncio.create_task(reply_and_delete(chat_id, sent_id))
+                asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
+            else:
+                stop_typing(chat_id)
         except Exception as retry_exc:
             print(f"[COMMENT RETRY ERROR] {chat_id}/{root_message_id}: {retry_exc!r}", flush=True)
+            stop_typing(chat_id)
     except Exception as exc:
         print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
+        stop_typing(chat_id)
 
 
 
@@ -766,6 +802,48 @@ async def on_raw_update(client, update, users, chats):
         print(traceback.format_exc(), flush=True)
 
 
+async def random_reply_loop():
+    """هر ۱۵ تا ۴۶ دقیقه: ریپلی روی پیام یک نفر‌ی رندوم در گروه با یک کلمه‌ی ۳حرفی رندوم."""
+    while True:
+        await asyncio.sleep(random.uniform(RANDOM_REPLY_MIN, RANDOM_REPLY_MAX))
+        try:
+            for gid in COMMENT_GROUPS:
+                candidates = []
+                async for m in app.get_chat_history(gid, limit=60):
+                    if getattr(m, "outgoing", False):
+                        continue
+                    fu = getattr(m, "from_user", None)
+                    if fu is None or getattr(fu, "is_bot", False):
+                        continue
+                    if getattr(m, "service", None):
+                        continue
+                    candidates.append(m)
+                if not candidates:
+                    print(f"[RANDOM REPLY] no candidates in {gid}", flush=True)
+                    continue
+                target = random.choice(candidates)
+                word = random_three_letter_word()
+                peer, _ = await get_channel_peers(gid)
+                res = await app.invoke(
+                    raw.functions.messages.SendMessage(
+                        peer=peer,
+                        message=word,
+                        random_id=secrets.randbits(63),
+                        reply_to_msg_id=target.id,
+                        no_webpage=True,
+                    )
+                )
+                rid = extract_sent_msg_id(res)
+                if rid:
+                    my_messages[gid].add(rid)
+                print(f"[RANDOM REPLY] {gid}/{target.id} user={target.from_user.id} word={word!r}", flush=True)
+        except FloodWait as exc:
+            print(f"[RANDOM REPLY FLOOD] wait={exc.value}s", flush=True)
+            await asyncio.sleep(exc.value + 1)
+        except Exception as exc:
+            print(f"[RANDOM REPLY ERROR] {exc!r}", flush=True)
+
+
 async def main():
     global MY_USER_ID
     async with app:
@@ -808,6 +886,7 @@ async def main():
 
         asyncio.create_task(poll_source_channels())
         asyncio.create_task(poll_group_forwarded_roots())
+        asyncio.create_task(random_reply_loop())
         print("[BOT2 STARTED]", flush=True)
         await asyncio.Event().wait()
 
