@@ -51,13 +51,23 @@ TRIGGER_WORDS = {
 # متن کامنت: کلمه‌ی دوحرفی فارسی رندوم از لیست ۱۰۰۰تایی جنریت‌شده — بعد از ۱-۳ ثانیه ادیت می‌شود
 FA_LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی"
 TWO_LETTER_WORDS = [a + b for a in FA_LETTERS for b in FA_LETTERS][:1000]  # ۳۲×۳۲=۱۰۲۴ → ۱۰۰۰تا
-EDIT_TEXT = "پاک نکن خر🫤"          # متن نهایی بعد از ادیت
-NORMALIZE_TARGET = EDIT_TEXT       # ادیت پیام‌های نامطابق به این متن
+EDIT_TEXTS = [                     # متن نهایی بعد از ادیت — رندوم یکی از این‌ها
+    "پاک نکن خر🫤",
+    "پاک نکن کثافت",
+    "چرا پاک میکنی😭",
+    "پاکش نکن",
+    "چرا پاک کرد😭",
+    "خب پاک نکن🫤",
+    "پاک نکن الاغ",
+    "چرا پاک میکنی خر",
+    "پاک نکن حیوان",
+    "هی پاک نکن😭",
+]
 PROFILE_NAME = "🦦Зара"                    # تنها اسم — همیشه به همین برمی‌گردد
 PROFILE_BIO = "ذهنی کبود از ضربه های افکار"  # تنها بیو — همیشه
 RANDOM_REPLY_MIN = 15 * 60         # حداقل فاصله‌ی ریپلی رندوم (۱۵ دقیقه)
 RANDOM_REPLY_MAX = 46 * 60         # حداکثر فاصله‌ی ریپلی رندوم (۴۶ دقیقه)
-VALID_OWN_TEXTS = {EDIT_TEXT, "نکن", "نه"}
+VALID_OWN_TEXTS = set(EDIT_TEXTS) | {"نکن", "نه"}
 
 
 def is_valid_own_text(text: str) -> bool:
@@ -312,7 +322,7 @@ async def _normalize_old_comments_inner():
                         skipped += 1
                         continue
                     try:
-                        new_text = NORMALIZE_TARGET
+                        new_text = random.choice(EDIT_TEXTS)
                         await app.edit_message_text(chat_id, item.id, new_text)
                         edited += 1
                         print(f"[NORMALIZED] {chat_id}/{item.id} -> {new_text}", flush=True)
@@ -387,15 +397,16 @@ async def edit_comment_after_delay(chat_id: int, comment_id: int):
         delay = random.uniform(1, 3)
         print(f"[EDIT SCHEDULED] {chat_id}/{comment_id} in {delay:.2f}s", flush=True)
         await asyncio.sleep(delay)
+        edit_text = random.choice(EDIT_TEXTS)
         try:
-            await app.edit_message_text(chat_id, comment_id, EDIT_TEXT)
-            print(f"[COMMENT EDITED] {chat_id}/{comment_id} -> {EDIT_TEXT!r}", flush=True)
+            await app.edit_message_text(chat_id, comment_id, edit_text)
+            print(f"[COMMENT EDITED] {chat_id}/{comment_id} -> {edit_text!r}", flush=True)
         except FloodWait as exc:
             print(f"[EDIT FLOOD] wait={exc.value}s", flush=True)
             await asyncio.sleep(exc.value + 1)
             try:
-                await app.edit_message_text(chat_id, comment_id, EDIT_TEXT)
-                print(f"[COMMENT EDITED AFTER FLOOD] {chat_id}/{comment_id}", flush=True)
+                await app.edit_message_text(chat_id, comment_id, edit_text)
+                print(f"[COMMENT EDITED AFTER FLOOD] {chat_id}/{comment_id} -> {edit_text!r}", flush=True)
             except Exception as retry_exc:
                 print(f"[EDIT RETRY ERROR] {chat_id}/{comment_id}: {retry_exc!r}", flush=True)
         except Exception as exc:
