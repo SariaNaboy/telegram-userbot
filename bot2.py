@@ -81,7 +81,7 @@ def random_three_letter_word() -> str:
     return "".join(random.choice(FA_LETTERS) for _ in range(3))
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "900"))  # تریدهای این گروه یواش‌ان — ۱۵ دقیقه صبر
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
-COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.3"))   # شانس کامنت: ۳۰٪
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.6"))   # شانس کامنت: ۶۰٪
 # هدف: پوزیشن رندوم بین ۲ تا ۸ (به ازای هر پست) — صبر تا ۱..۷ کامنت بیرونی
 TRIG_MIN = 1   # پوزیشن ۲
 TRIG_MAX = 7   # پوزیشن ۸
@@ -308,10 +308,9 @@ _normalize_running = False
 
 async def _normalize_old_comments_inner():
     """پیام‌های قبلی *خودم* را از سرور می‌گردد (search_messages با from_user=me)
-    و هر کدام که نامطابق‌اند (نه «پاک نکن خر🫤» و نه کلمات ۲-۳ حرفی فارسی) به
-    «پاک نکن خر🫤» ادیت می‌کند — در هر پست جدید.
+    و هر کدام که نامطابق‌اند را *حذف* می‌کند (درخواست کاربر: دیگر ادیت نمی‌شوند) — در هر پست جدید.
     این روش حتی به پیام‌های خیلی قدیمی‌تر هم می‌رسد — برخلاف اسکن history."""
-    total_mine = edited = skipped = 0
+    total_mine = deleted = skipped = 0
     for chat_id in COMMENT_GROUPS | DELETE_GROUPS:
         try:
             async for item in app.search_messages(chat_id, from_user="me"):
@@ -321,24 +320,20 @@ async def _normalize_old_comments_inner():
                     if text is None or is_valid_own_text(text):
                         skipped += 1
                         continue
+                    # درخواست کاربر: نامطابق‌ها ادیت نمی‌شوند — حذف می‌شوند
                     try:
-                        new_text = random.choice(EDIT_TEXTS)
-                        await app.edit_message_text(chat_id, item.id, new_text)
-                        edited += 1
-                        print(f"[NORMALIZED] {chat_id}/{item.id} -> {new_text}", flush=True)
+                        await delete_now(chat_id, item.id)
+                        deleted += 1
+                        print(f"[NORMALIZE DELETED] {chat_id}/{item.id}", flush=True)
                         await asyncio.sleep(1)  # آروم، ضد flood
-                    except FloodWait as exc:
-                        print(f"[NORMALIZE FLOOD] wait={exc.value}s", flush=True)
-                        await asyncio.sleep(exc.value + 1)
                     except Exception as exc:
-                        # پیام خیلی قدیمی (۴۸ساعت) / پاک‌شده / MESSAGE_NOT_MODIFIED
                         print(f"[NORMALIZE SKIP] {chat_id}/{item.id}: {exc!r}", flush=True)
                         skipped += 1
                 except Exception as exc:
                     print(f"[NORMALIZE ITEM ERROR] {exc!r}", flush=True)
         except Exception as exc:
             print(f"[NORMALIZE SEARCH ERROR] {chat_id}: {exc!r}", flush=True)
-    print(f"[NORMALIZE DONE] own_msgs={total_mine} edited={edited} skipped={skipped}", flush=True)
+    print(f"[NORMALIZE DONE] own_msgs={total_mine} deleted={deleted} skipped={skipped}", flush=True)
 
 
 async def normalize_old_comments():
