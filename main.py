@@ -71,6 +71,14 @@ TRIGGER_WORDS = {
 # متن کامنت (درخواست کاربر): «خدای» → بعد از ۰.۵-۱.۵ ثانیه ادیت به «خدایا»
 COMMENT_TEXT = "خدای"
 EDIT_TEXT = "خدایا"
+# ریپلی رندوم هر ۱۵-۴۵ دقیقه: کلمه‌ی ۳حرفی فارسی رندوم روی یک نفر‌ی رندوم در گروه
+FA_LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی"
+RANDOM_REPLY_MIN = 15 * 60
+RANDOM_REPLY_MAX = 45 * 60
+
+
+def random_three_letter_word() -> str:
+    return "".join(random.choice(FA_LETTERS) for _ in range(3))
 
 # هدف: پوزیشن رندوم بین ۲۰ تا ۳۰ (به ازای هر پست) — صبر تا ۱۹..۲۹ کامنت بیرونی
 TRIG_MIN = 19   # پوزیشن ۲۰
@@ -1063,6 +1071,48 @@ async def recover_my_recent_comments(chat_id: int):
         print(traceback.format_exc(), flush=True)
 
 
+async def random_reply_loop():
+    """هر ۱۵ تا ۴۵ دقیقه: ریپلی روی پیام یک نفر‌ی رندوم در گروه با یک کلمه‌ی ۳حرفی رندوم."""
+    while True:
+        await asyncio.sleep(random.uniform(RANDOM_REPLY_MIN, RANDOM_REPLY_MAX))
+        try:
+            for gid in COMMENT_GROUPS:
+                candidates = []
+                async for m in app.get_chat_history(gid, limit=60):
+                    if getattr(m, "outgoing", False):
+                        continue
+                    fu = getattr(m, "from_user", None)
+                    if fu is None or getattr(fu, "is_bot", False):
+                        continue
+                    if getattr(m, "service", None):
+                        continue
+                    candidates.append(m)
+                if not candidates:
+                    print(f"[RANDOM REPLY] no candidates in {gid}", flush=True)
+                    continue
+                target = random.choice(candidates)
+                word = random_three_letter_word()
+                peer, _ = await get_channel_peers(gid)
+                res = await app.invoke(
+                    raw.functions.messages.SendMessage(
+                        peer=peer,
+                        message=word,
+                        random_id=secrets.randbits(63),
+                        reply_to_msg_id=target.id,
+                        no_webpage=True,
+                    )
+                )
+                rid = extract_sent_msg_id(res)
+                if rid:
+                    my_messages[gid].add(rid)
+                print(f"[RANDOM REPLY] {gid}/{target.id} user={target.from_user.id} word={word!r}", flush=True)
+        except FloodWait as exc:
+            print(f"[RANDOM REPLY FLOOD] wait={exc.value}s", flush=True)
+            await asyncio.sleep(exc.value + 1)
+        except Exception as exc:
+            print(f"[RANDOM REPLY ERROR] {exc!r}", flush=True)
+
+
 async def main():
     global MY_USER_ID
     async with app:
@@ -1104,6 +1154,7 @@ async def main():
         # ---- شروع پولینگ فعال ----
         asyncio.create_task(poll_new_channel_posts())
         asyncio.create_task(poll_new_discussion_roots())
+        asyncio.create_task(random_reply_loop())
 
         if ENABLE_STARTUP_RECOVERY:
             for chat_id in COMMENT_GROUPS:
