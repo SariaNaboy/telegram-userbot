@@ -130,7 +130,7 @@ class InputPrivacyKeyAbout(TLObject):
 
 
 PROFILE_NAME = "🦦pара fesi"          # تنها اسم — همیشه
-PROFILE_BIO = "Sh ❤️"                    # تنها بیو — همیشه
+PROFILE_BIO = "ذهنی کبود از ضربه های افکار"                    # تنها بیو — همیشه
 PROFILE_PHOTO_CHAT = "weputtingprofile"  # عکس مرجع پروفایل (https://t.me/weputtingprofile/2)
 PROFILE_PHOTO_MSG_ID = 2
 _ref_photo = {"path": None, "unique_id": None}
@@ -375,6 +375,29 @@ async def delete_now(chat_id: int, message_id: int):
         print(f"[DELETE ERROR] {chat_id}/{message_id}: {exc!r}", flush=True)
 
 
+_typing_flags = {}
+
+
+async def _typing_loop(chat_id: int):
+    """تا وقتی فلگ روشن است (تا پایان ادیت)، هر ۴ ثانیه اکشن typing می‌فرستد."""
+    while _typing_flags.get(chat_id):
+        try:
+            await app.send_chat_action(chat_id, "typing")
+        except Exception as exc:
+            print(f"[TYPING ERROR] {chat_id}: {exc!r}", flush=True)
+        await asyncio.sleep(4)
+
+
+def start_typing(chat_id: int):
+    if not _typing_flags.get(chat_id):
+        _typing_flags[chat_id] = True
+        asyncio.get_event_loop().create_task(_typing_loop(chat_id))
+
+
+def stop_typing(chat_id: int):
+    _typing_flags[chat_id] = False
+
+
 async def edit_comment_after_delay(chat_id: int, comment_id: int):
     """۰.۵ تا ۱.۵ ثانیه بعد از کامنت «خدای»: ادیت به «خدایا»."""
     try:
@@ -396,11 +419,14 @@ async def edit_comment_after_delay(chat_id: int, comment_id: int):
             print(f"[EDIT ERROR] {chat_id}/{comment_id}: {exc!r}", flush=True)
     except Exception as exc:
         print(f"[EDIT TASK ERROR] {chat_id}/{comment_id}: {exc!r}", flush=True)
+    finally:
+        stop_typing(chat_id)
 
 
 async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """Send one reply to a discussion root. The caller must reserve the root first."""
     global last_post_detected, my_comments
+    start_typing(chat_id)
     try:
         peer, _ = await get_channel_peers(chat_id)
         print(
@@ -429,6 +455,8 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             del my_comments[:-MAX_TRACKED_COMMENTS]
             print(f"[COMMENT TRACKED] chat={chat_id} msg={sent_id} total={len(my_comments)}", flush=True)
             asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
+        else:
+            stop_typing(chat_id)
         asyncio.create_task(notify_admin_delayed())
 
         # تغییر هویت به AmirAli + ریست تایمر «آخرین پست»
@@ -457,12 +485,16 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
                 my_comments.append((chat_id, sent_id))
                 del my_comments[:-MAX_TRACKED_COMMENTS]
                 asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
+            else:
+                stop_typing(chat_id)
             asyncio.create_task(notify_admin_delayed())
         except Exception as retry_exc:
             print(f"[COMMENT RETRY ERROR] {chat_id}/{root_message_id}: {retry_exc!r}", flush=True)
+            stop_typing(chat_id)
     except Exception as exc:
         print(f"[COMMENT ERROR] {chat_id}/{root_message_id}: {exc!r}", flush=True)
         print(traceback.format_exc(), flush=True)
+        stop_typing(chat_id)
 
 
 def comments_in_last_hour() -> int:
