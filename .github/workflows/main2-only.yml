@@ -1,0 +1,40 @@
+name: Run Main Copy Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: 'Duration in hours (e.g. 4)'
+        required: true
+        default: '4'
+
+jobs:
+  main2:
+    runs-on: ubuntu-latest
+    env:
+      DURATION_HOURS: ${{ inputs.duration_hours }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pyrogram tgcrypto
+      - name: Run Main Copy (timed)
+        run: |
+          SECS=$(python3 -c "print(int(float('$DURATION_HOURS')*3600))")
+          echo "Running for $SECS seconds"
+          timeout "$SECS" python -u main.py
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING_M2 }}
+          PYTHONUNBUFFERED: "1"
+          admin_username: ${{ secrets.admin_username }}
+          MAIN_SOURCE_CHANNEL: "-1002918683682"
+          MAIN_GROUP_ID: "-1003914365874"
+          COMMENT_CHANCE: "1.0"
+          COMMENT_EVERY_N: "2"
+          MAX_COMMENTS_PER_HOUR: "30"
+          SOURCE_POLL_INTERVAL: "8"
+          WAIT_FOR_FIRST_COMMENT: "1800"
