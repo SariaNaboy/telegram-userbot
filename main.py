@@ -69,8 +69,8 @@ COMMENT_TEXT = "خدای"
 EDIT_TEXT = "خدایا"
 # ریپلی رندوم هر ۱۵-۴۵ دقیقه: کلمه‌ی ۳حرفی فارسی رندوم روی یک نفر‌ی رندوم در گروه
 FA_LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی"
-RANDOM_REPLY_MIN = 15 * 60
-RANDOM_REPLY_MAX = 45 * 60
+RANDOM_REPLY_MIN = int(os.getenv("RANDOM_REPLY_MIN", str(15 * 60)))
+RANDOM_REPLY_MAX = int(os.getenv("RANDOM_REPLY_MAX", str(45 * 60)))
 
 
 def random_three_letter_word() -> str:
