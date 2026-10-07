@@ -52,18 +52,14 @@ SESSION = os.environ["SESSION_STRING"]
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or os.getenv("admin_username")
 
 # فقط چت‌هایی که با این سشن معتبرند (بقیه Peer id invalid می‌دادند)
-DELETE_GROUPS = {
-    -1001596320253,
-}
-COMMENT_GROUPS = {
-    -1001596320253,
-}
+# با env قابل اورراید است (نسخه‌ی دوم main روی کانال/گروه دیگر)
+_GROUP_ID = int(os.getenv("MAIN_GROUP_ID", "-1001596320253"))
+DELETE_GROUPS = {_GROUP_ID}
+COMMENT_GROUPS = {_GROUP_ID}
 
 # Source channels whose post updates may arrive even when Telegram doesn't send
 # the automatic-forward update from the linked discussion group.
-DISCUSSION_SOURCE_CHANNELS = {
-    -1001279727614,
-}
+DISCUSSION_SOURCE_CHANNELS = {int(os.getenv("MAIN_SOURCE_CHANNEL", "-1001279727614"))}
 TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
