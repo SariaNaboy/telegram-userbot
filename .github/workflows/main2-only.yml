@@ -38,3 +38,5 @@ jobs:
           MAX_COMMENTS_PER_HOUR: "30"
           SOURCE_POLL_INTERVAL: "8"
           WAIT_FOR_FIRST_COMMENT: "1800"
+          RANDOM_REPLY_MIN: "1800"    # ریپلی رندوم: هر ۳۰ دقیقه
+          RANDOM_REPLY_MAX: "3600"    # تا ۶۰ دقیقه
