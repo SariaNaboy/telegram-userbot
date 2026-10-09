@@ -456,16 +456,6 @@ async def edit_comment_after_delay(chat_id: int, comment_id: int):
         stop_typing(chat_id)
 
 
-async def delete_prev_comments_except(keep_chat: int, keep_msg: int):
-    """کامنت‌های قبلی فقط بعد از ارسال موفق کامنت جدید پاک می‌شوند (درخواست کاربر)."""
-    global my_comments
-    old = [(c, m) for (c, m) in my_comments if not (c == keep_chat and m == keep_msg)]
-    my_comments = [(c, m) for (c, m) in my_comments if (c == keep_chat and m == keep_msg)]
-    for c, m in old:
-        print(f"[DELETE PREV COMMENT] {c}/{m}", flush=True)
-        asyncio.create_task(delete_now(c, m))
-
-
 async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """Send one reply to a discussion root. The caller must reserve the root first."""
     global last_post_detected, my_comments
@@ -498,7 +488,6 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             del my_comments[:-MAX_TRACKED_COMMENTS]
             print(f"[COMMENT TRACKED] chat={chat_id} msg={sent_id} total={len(my_comments)}", flush=True)
             asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
-            await delete_prev_comments_except(chat_id, sent_id)
         else:
             stop_typing(chat_id)
         asyncio.create_task(notify_admin_delayed())
@@ -529,7 +518,6 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
                 my_comments.append((chat_id, sent_id))
                 del my_comments[:-MAX_TRACKED_COMMENTS]
                 asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
-                await delete_prev_comments_except(chat_id, sent_id)
             else:
                 stop_typing(chat_id)
             asyncio.create_task(notify_admin_delayed())
@@ -807,9 +795,14 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
                 watch_discussion_root(chat_id, root_message_id)
             )
 
-    # ---- ۴) کامنت‌های قبلی: دیگر اینجا پاک نمی‌شوند — فقط بعد از ارسال موفق
-    # کامنت جدید (در send_comment_after_external_reply) پاک می‌شوند تا کامنت
-    # فعلی هیچ‌وقت زودتر از جایگزین شدنش ناپدید شود ----
+    # ---- ۴) پاک‌سازی کامنت‌های قبلی — روی هر پست جدیدِ کانال اصلی (چه بگذارد چه نه)
+    # فوروارد کانال‌های خارجی بالاتر فیلتر می‌شود و به اینجا نمی‌رسد ----
+    if my_comments:
+        to_delete = list(my_comments)
+        my_comments.clear()
+        for old_chat, old_msg in to_delete:
+            print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
+            asyncio.create_task(delete_now(old_chat, old_msg))
 
 
 @app.on_message(filters.chat(list(DISCUSSION_SOURCE_CHANNELS)) & ~filters.outgoing)
