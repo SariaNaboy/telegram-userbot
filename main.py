@@ -137,7 +137,8 @@ PROFILE_NAME = "🦦pара fesi"          # تنها اسم — همیشه
 PROFILE_BIO = "ذهنی کبود از ضربه های افکار"                    # تنها بیو — همیشه
 PROFILE_PHOTO_CHAT = "weputtingprofile"  # عکس مرجع پروفایل (https://t.me/weputtingprofile/2)
 PROFILE_PHOTO_MSG_ID = 2
-_ref_photo = {"path": None, "unique_id": None}
+_ref_photo = {"path": None, "unique_id": None, "set_unique_id": None}
+profile_apply_lock = asyncio.Lock()
 PROFILE_AMIRALI_USERNAME = "Amirali126868"
 PROFILE_MAYA_NAME = "Maya"
 PROFILE_MAYA_USERNAME = ""          # بدون یوزرنیم
@@ -207,6 +208,19 @@ async def set_privacy_rule(key, allow_all: bool):
     )
 
 
+async def set_privacy_rule_safe(key, allow_all: bool, tries: int = 3):
+    """SetPrivacy گاهی ۵۰۰ WP_ID_GENERATE_FAILED می‌دهد؛ چند بار با فاصله تلاش و در نهایت بدون کرش رد می‌شود."""
+    for attempt in range(1, tries + 1):
+        try:
+            return await set_privacy_rule(key, allow_all=allow_all)
+        except Exception as exc:
+            if attempt < tries:
+                print(f"[PRIVACY RETRY {attempt}/{tries}] {exc!r}", flush=True)
+                await asyncio.sleep(10)
+            else:
+                print(f"[PRIVACY GIVEUP] {exc!r}", flush=True)
+
+
 async def get_reference_photo():
     """عکس مرجع پروفایل را از لینک t.me یک‌بار می‌گیرد و کش می‌کند."""
     if _ref_photo["path"] and os.path.exists(_ref_photo["path"]):
@@ -221,17 +235,23 @@ async def get_reference_photo():
 
 
 async def ensure_profile_photo():
-    """اگر عکسِ فعلی = مرجع نبود: عکس(های) فعلی حذف و مرجع گذاشته می‌شود. هرگز هاید نمی‌شود."""
-    if _ref_photo["path"] is None:
+    """اگر عکسِ فعلی = مرجع نبود: عکس(های) فعلی حذف و مرجع گذاشته می‌شود. هرگز هاید نمی‌شود.
+    نکته: بعد از set، تلگرام عکس را دوباره پردازش می‌کند و unique_id عوض می‌شود — پس
+    unique_idِ عکسی را که خودمان ست کرده‌ایم هم به‌جای unique_id مرجع قبول می‌کنیم
+    تا هر بار بی‌خود حذف/آپلود نکنیم."""
+    if _ref_photo["path"] is None or not os.path.exists(_ref_photo["path"]):
+        _ref_photo["path"] = None
+        _ref_photo["unique_id"] = None
         await get_reference_photo()
     ref_unique = _ref_photo["unique_id"]
+    accepted = {u for u in (ref_unique, _ref_photo.get("set_unique_id")) if u}
     current = []
     async for ph in app.get_chat_photos("me"):
         current.append(ph)
         if len(current) >= 3:
             break
     primary_unique = getattr(current[0], "file_unique_id", None) if current else None
-    if primary_unique == ref_unique:
+    if primary_unique and primary_unique in accepted:
         return False
     if current:
         try:
@@ -239,6 +259,13 @@ async def ensure_profile_photo():
         except Exception as exc:
             print(f"[PROFILE PHOTO DELETE ERROR] {exc!r}", flush=True)
     await app.set_profile_photo(photo=_ref_photo["path"])
+    try:
+        await asyncio.sleep(1)
+        async for ph in app.get_chat_photos("me"):
+            _ref_photo["set_unique_id"] = getattr(ph, "file_unique_id", None)
+            break
+    except Exception as exc:
+        print(f"[PROFILE PHOTO RE-READ WARN] {exc!r}", flush=True)
     print("[PROFILE PHOTO] replaced with reference", flush=True)
     return True
 
@@ -248,16 +275,21 @@ async def apply_profile_amirali():
     اگر اسم/بیو دستی عوض شده بود برمی‌گردد؛ اگر عکس مرجع نبود حذف و تعویض می‌شود.
     عکس و بیو هرگز هاید نمی‌شوند."""
     global profile_mode
-    try:
-        me = await app.get_me()
-        full = await app.invoke(raw.functions.users.GetFullUser(id=raw.types.InputPeerSelf()))
-        current_name = (me.first_name or "")
-        current_bio = getattr(full.full_user, "about", "") or ""
-        drifted = current_name != PROFILE_NAME or current_bio != PROFILE_BIO
-        if drifted:
-            await app.invoke(raw.functions.account.UpdateProfile(first_name=PROFILE_NAME, about=PROFILE_BIO))
-        await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
-        await set_privacy_rule(InputPrivacyKeyAbout(), allow_all=True)
+    async with profile_apply_lock:
+        # هر مرحله مستقل است: خطای یکی نباید بقیه (مخصوصاً عکس) را بلاک کند
+        drifted = False
+        try:
+            me = await app.get_me()
+            full = await app.invoke(raw.functions.users.GetFullUser(id=raw.types.InputPeerSelf()))
+            current_name = (me.first_name or "")
+            current_bio = getattr(full.full_user, "about", "") or ""
+            drifted = current_name != PROFILE_NAME or current_bio != PROFILE_BIO
+            if drifted:
+                await app.invoke(raw.functions.account.UpdateProfile(first_name=PROFILE_NAME, about=PROFILE_BIO))
+        except Exception as exc:
+            print(f"[PROFILE NAME/BIO ERROR] {exc!r}", flush=True)
+        await set_privacy_rule_safe(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
+        await set_privacy_rule_safe(InputPrivacyKeyAbout(), allow_all=True)
         photo_changed = False
         try:
             photo_changed = await ensure_profile_photo()
@@ -268,9 +300,6 @@ async def apply_profile_amirali():
             f"[PROFILE] name={PROFILE_NAME!r} bio={PROFILE_BIO!r} drifted={drifted} photo_changed={photo_changed}",
             flush=True,
         )
-    except Exception as exc:
-        print(f"[PROFILE AMIRALI ERROR] {exc!r}", flush=True)
-        print(traceback.format_exc(), flush=True)
 
 
 async def apply_profile_maya():
@@ -427,6 +456,16 @@ async def edit_comment_after_delay(chat_id: int, comment_id: int):
         stop_typing(chat_id)
 
 
+async def delete_prev_comments_except(keep_chat: int, keep_msg: int):
+    """کامنت‌های قبلی فقط بعد از ارسال موفق کامنت جدید پاک می‌شوند (درخواست کاربر)."""
+    global my_comments
+    old = [(c, m) for (c, m) in my_comments if not (c == keep_chat and m == keep_msg)]
+    my_comments = [(c, m) for (c, m) in my_comments if (c == keep_chat and m == keep_msg)]
+    for c, m in old:
+        print(f"[DELETE PREV COMMENT] {c}/{m}", flush=True)
+        asyncio.create_task(delete_now(c, m))
+
+
 async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
     """Send one reply to a discussion root. The caller must reserve the root first."""
     global last_post_detected, my_comments
@@ -459,6 +498,7 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
             del my_comments[:-MAX_TRACKED_COMMENTS]
             print(f"[COMMENT TRACKED] chat={chat_id} msg={sent_id} total={len(my_comments)}", flush=True)
             asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
+            await delete_prev_comments_except(chat_id, sent_id)
         else:
             stop_typing(chat_id)
         asyncio.create_task(notify_admin_delayed())
@@ -489,6 +529,7 @@ async def send_comment_after_external_reply(chat_id: int, root_message_id: int):
                 my_comments.append((chat_id, sent_id))
                 del my_comments[:-MAX_TRACKED_COMMENTS]
                 asyncio.create_task(edit_comment_after_delay(chat_id, sent_id))
+                await delete_prev_comments_except(chat_id, sent_id)
             else:
                 stop_typing(chat_id)
             asyncio.create_task(notify_admin_delayed())
@@ -713,6 +754,16 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
     if root_key in comment_attempted or root_key in thread_watchers:
         return
 
+    # ریشه‌هایی که از کانال‌های دیگر به گروه فوروارد شده‌اند: هیچ‌کاری نکن
+    # (نه شمارنده‌ی every-N جلو می‌رود، نه کامنت قبلی دست می‌خورد)
+    if source_channel_id is not None and source_channel_id not in DISCUSSION_SOURCE_CHANNELS:
+        print(
+            f"[ROOT IGNORED FOREIGN SOURCE] chat={chat_id} root={root_message_id} "
+            f"source_channel={source_channel_id} via={source}",
+            flush=True,
+        )
+        return
+
     last_post_detected = time.monotonic()
 
     print(
@@ -756,13 +807,9 @@ async def observe_discussion_root(chat_id: int, root_message_id: int, source_cha
                 watch_discussion_root(chat_id, root_message_id)
             )
 
-    # ---- ۴) پاک‌سازی کامنت‌های قبلی — همیشه، ولی در انتها تا سرعت کامنت‌گذاری حفظ شود ----
-    if my_comments:
-        to_delete = list(my_comments)
-        my_comments.clear()
-        for old_chat, old_msg in to_delete:
-            print(f"[DELETE PREV COMMENT] {old_chat}/{old_msg}", flush=True)
-            asyncio.create_task(delete_now(old_chat, old_msg))
+    # ---- ۴) کامنت‌های قبلی: دیگر اینجا پاک نمی‌شوند — فقط بعد از ارسال موفق
+    # کامنت جدید (در send_comment_after_external_reply) پاک می‌شوند تا کامنت
+    # فعلی هیچ‌وقت زودتر از جایگزین شدنش ناپدید شود ----
 
 
 @app.on_message(filters.chat(list(DISCUSSION_SOURCE_CHANNELS)) & ~filters.outgoing)
@@ -1047,6 +1094,10 @@ async def recover_my_recent_comments(chat_id: int):
     """در استارت، آخرین کامنت‌های خودمان را در گروه پیدا می‌کند تا با پست بعدی پاک شوند."""
     global my_comments
     try:
+        try:
+            await app.get_chat(chat_id)  # ریزالو peer — بدون این ValueError: Peer id invalid می‌دهد
+        except Exception as resolve_exc:
+            print(f"[RECOVER PEER RESOLVE WARN] {chat_id}: {resolve_exc!r}", flush=True)
         found = 0
         async for item in app.get_chat_history(chat_id, limit=200):
             is_mine = bool(getattr(item, "outgoing", False)) or (
