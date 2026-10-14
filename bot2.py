@@ -47,27 +47,19 @@ TRIGGER_WORDS = {
     "گزارش", "report", "@admin", "صیک", "سیک",
     "اخطار", "بن", "سکوت", "ban", "mute",
 }
-# متن‌ها (درخواست کاربر): کامنت «نکن» + ریپلی «نه» روی همان کامنت
-# متن کامنت: کلمه‌ی دوحرفی فارسی رندوم از لیست ۱۰۰۰تایی جنریت‌شده — بعد از ۱-۳ ثانیه ادیت می‌شود
+# متن‌ها: مثل main — کامنت «خدای» که بعد از ۰.۵-۱.۵ ثانیه به «خدایا» ادیت می‌شود
 FA_LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی"
-TWO_LETTER_WORDS = [a + b for a in FA_LETTERS for b in FA_LETTERS][:1000]  # ۳۲×۳۲=۱۰۲۴ → ۱۰۰۰تا
-EDIT_TEXTS = [                     # متن نهایی بعد از ادیت — رندوم یکی از این‌ها
-    "پاک نکن خر🫤",
-    "پاک نکن کثافت",
-    "چرا پاک میکنی😭",
-    "پاکش نکن",
-    "چرا پاک کرد😭",
-    "خب پاک نکن🫤",
-    "پاک نکن الاغ",
-    "چرا پاک میکنی خر",
-    "پاک نکن حیوان",
-    "هی پاک نکن😭",
-]
-PROFILE_NAME = "🦦Зара"                    # تنها اسم — همیشه به همین برمی‌گردد
+COMMENT_TEXT = "خدای"           # کامنت اولیه (مثل main)
+EDIT_TEXT = "خدایا"             # متن نهایی بعد از ادیت (مثل main)
+PROFILE_NAME = "🦦pара fesi"               # تنها اسم — همیشه به همین برمی‌گردد (مثل main)
 PROFILE_BIO = "ذهنی کبود از ضربه های افکار"  # تنها بیو — همیشه
-RANDOM_REPLY_MIN = 15 * 60         # حداقل فاصله‌ی ریپلی رندوم (۱۵ دقیقه)
-RANDOM_REPLY_MAX = 46 * 60         # حداکثر فاصله‌ی ریپلی رندوم (۴۶ دقیقه)
-VALID_OWN_TEXTS = set(EDIT_TEXTS) | {"نکن", "نه"}
+PROFILE_PHOTO_CHAT = "weputtingprofile"  # عکس مرجع پروفایل (https://t.me/weputtingprofile/2)
+PROFILE_PHOTO_MSG_ID = 2
+_ref_photo = {"path": None, "unique_id": None, "set_unique_id": None}
+profile_apply_lock = asyncio.Lock()
+RANDOM_REPLY_MIN = int(os.getenv("RANDOM_REPLY_MIN", str(15 * 60)))  # ریپلی رندوم: از ۱۵ دقیقه
+RANDOM_REPLY_MAX = int(os.getenv("RANDOM_REPLY_MAX", str(30 * 60)))  # تا ۳۰ دقیقه
+VALID_OWN_TEXTS = {COMMENT_TEXT, EDIT_TEXT}  # مچ = بماند، نمچ = حذف
 
 
 def is_valid_own_text(text: str) -> bool:
@@ -81,10 +73,12 @@ def random_three_letter_word() -> str:
     return "".join(random.choice(FA_LETTERS) for _ in range(3))
 WAIT_FOR_FIRST_COMMENT = int(os.getenv("WAIT_FOR_FIRST_COMMENT", "900"))  # تریدهای این گروه یواش‌ان — ۱۵ دقیقه صبر
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15.0"))
-COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "0.6"))   # شانس کامنت: ۶۰٪
-# هدف: پوزیشن رندوم بین ۲ تا ۸ (به ازای هر پست) — صبر تا ۱..۷ کامنت بیرونی
-TRIG_MIN = 1   # پوزیشن ۲
-TRIG_MAX = 7   # پوزیشن ۸
+COMMENT_CHANCE = float(os.getenv("COMMENT_CHANCE", "1.0"))   # شانس کامنت: ۱۰۰٪
+COMMENT_EVERY_N = int(os.getenv("COMMENT_EVERY_N", "2"))     # یک پست در میان (مثل main)
+_root_index = 0
+# هدف: پوزیشن رندوم بین ۱۵ تا ۲۵ (به ازای هر پست) — صبر تا ۱۴..۲۴ کامنت بیرونی
+TRIG_MIN = 14  # پوزیشن ۱۵
+TRIG_MAX = 24  # پوزیشن ۲۵
 root_trigger_counts = {}   # root_key -> تعداد کامنت بیرونی لازم
 MAX_COMMENTS_PER_HOUR = int(os.getenv("MAX_COMMENTS_PER_HOUR", "30"))  # سقف ساعتی
 GROUP_POLL_INTERVAL = float(os.getenv("GROUP_POLL_INTERVAL", "5.0"))
@@ -239,27 +233,92 @@ async def set_privacy_rule(key, allow_all: bool):
     return await app.invoke(raw.functions.account.SetPrivacy(key=key, rules=[rule]))
 
 
-async def apply_profile_amirali():
-    """قبل از هر کامنت (و روی هر پست): هویت — حتی اگر دستی عوض شده باشد —
-    به 🦦Зара + «ذهنی کبود از ضربه های افکار» برمی‌گردد؛ بقیه‌ی پروفایل دست‌نخورده.
-    استثنای پروفایل: هاید عکس فقط وقتی که بیو فعلی ≠ بیو هدف باشد."""
-    global profile_mode
+async def set_privacy_rule_safe(key, allow_all: bool, tries: int = 3):
+    """SetPrivacy گاهی ۵۰۰ WP_ID_GENERATE_FAILED می‌دهد؛ چند بار با فاصله تلاش و در نهایت بدون کرش رد می‌شود."""
+    for attempt in range(1, tries + 1):
+        try:
+            return await set_privacy_rule(key, allow_all=allow_all)
+        except Exception as exc:
+            if attempt < tries:
+                print(f"[PRIVACY RETRY {attempt}/{tries}] {exc!r}", flush=True)
+                await asyncio.sleep(10)
+            else:
+                print(f"[PRIVACY GIVEUP] {exc!r}", flush=True)
+
+
+async def get_reference_photo():
+    """عکس مرجع پروفایل را از لینک t.me یک‌بار می‌گیرد و کش می‌کند."""
+    if _ref_photo["path"] and os.path.exists(_ref_photo["path"]):
+        return _ref_photo["path"]
+    msg = await app.get_messages(PROFILE_PHOTO_CHAT, PROFILE_PHOTO_MSG_ID)
+    if msg is None or getattr(msg, "photo", None) is None:
+        raise RuntimeError("reference photo post has no photo")
+    _ref_photo["unique_id"] = msg.photo.file_unique_id
+    _ref_photo["path"] = await app.download_media(msg, file_name="ref_profile_photo.jpg")
+    print("[PROFILE PHOTO] reference cached", flush=True)
+    return _ref_photo["path"]
+
+
+async def ensure_profile_photo():
+    """اگر عکسِ فعلی = مرجع نبود: عکس(های) فعلی حذف و مرجع گذاشته می‌شود. هرگز هاید نمی‌شود.
+    بعد از set، تلگرام unique_id را عوض می‌کند — unique_id عکسی که خودمان ست کرده‌ایم هم قبول است."""
+    if _ref_photo["path"] is None or not os.path.exists(_ref_photo["path"]):
+        _ref_photo["path"] = None
+        _ref_photo["unique_id"] = None
+        await get_reference_photo()
+    ref_unique = _ref_photo["unique_id"]
+    accepted = {u for u in (ref_unique, _ref_photo.get("set_unique_id")) if u}
+    current = []
+    async for ph in app.get_chat_photos("me"):
+        current.append(ph)
+        if len(current) >= 3:
+            break
+    primary_unique = getattr(current[0], "file_unique_id", None) if current else None
+    if primary_unique and primary_unique in accepted:
+        return False
+    if current:
+        try:
+            await app.delete_profile_photos([getattr(ph, "file_id") for ph in current])
+        except Exception as exc:
+            print(f"[PROFILE PHOTO DELETE ERROR] {exc!r}", flush=True)
+    await app.set_profile_photo(photo=_ref_photo["path"])
     try:
-        me = await app.get_me()
-        full = await app.invoke(raw.functions.users.GetFullUser(id=raw.types.InputPeerSelf()))
-        current_name = (me.first_name or "")
-        current_bio = getattr(full.full_user, "about", "") or ""
-        bio_differs = current_bio != PROFILE_BIO
-        drifted = current_name != PROFILE_NAME or bio_differs
-        if drifted:
-            await app.invoke(raw.functions.account.UpdateProfile(first_name=PROFILE_NAME, about=PROFILE_BIO))
-        if bio_differs:
-            await set_privacy_rule(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=False)
-        profile_mode = "amirali"
-        print(f"[PROFILE] name={PROFILE_NAME!r} bio={PROFILE_BIO!r} drifted={drifted} prev={current_name!r}/{current_bio!r} photo_hidden={bio_differs}", flush=True)
+        await asyncio.sleep(1)
+        async for ph in app.get_chat_photos("me"):
+            _ref_photo["set_unique_id"] = getattr(ph, "file_unique_id", None)
+            break
     except Exception as exc:
-        print(f"[PROFILE ERROR] {exc!r}", flush=True)
-        print(traceback.format_exc(), flush=True)
+        print(f"[PROFILE PHOTO RE-READ WARN] {exc!r}", flush=True)
+    print("[PROFILE PHOTO] replaced with reference", flush=True)
+    return True
+
+
+async def apply_profile_amirali():
+    """قبل از هر کامنت (و روی هر پست): هویت main — 🦦pара fesi + «ذهنی کبود از ضربه های افکار»
+    + عکس مرجع t.me/weputtingprofile/2. عکس و بیو هرگز هاید نمی‌شوند؛ اگر عکس مرجع نبود
+    حذف و تعویض می‌شود. هر مرحله ایزوله است تا خطای یکی بقیه را بلاک نکند."""
+    global profile_mode
+    async with profile_apply_lock:
+        drifted = False
+        try:
+            me = await app.get_me()
+            full = await app.invoke(raw.functions.users.GetFullUser(id=raw.types.InputPeerSelf()))
+            current_name = (me.first_name or "")
+            current_bio = getattr(full.full_user, "about", "") or ""
+            drifted = current_name != PROFILE_NAME or current_bio != PROFILE_BIO
+            if drifted:
+                await app.invoke(raw.functions.account.UpdateProfile(first_name=PROFILE_NAME, about=PROFILE_BIO))
+        except Exception as exc:
+            print(f"[PROFILE NAME/BIO ERROR] {exc!r}", flush=True)
+        await set_privacy_rule_safe(raw.types.InputPrivacyKeyProfilePhoto(), allow_all=True)
+        await set_privacy_rule_safe(InputPrivacyKeyAbout(), allow_all=True)
+        photo_changed = False
+        try:
+            photo_changed = await ensure_profile_photo()
+        except Exception as photo_exc:
+            print(f"[PROFILE PHOTO ERROR] {photo_exc!r}", flush=True)
+        profile_mode = "amirali"
+        print(f"[PROFILE] name={PROFILE_NAME!r} bio={PROFILE_BIO!r} drifted={drifted} photo_changed={photo_changed}", flush=True)
 
 
 async def apply_profile_maya():
@@ -387,12 +446,12 @@ def stop_typing(chat_id: int):
 
 
 async def edit_comment_after_delay(chat_id: int, comment_id: int):
-    """۱ تا ۳ ثانیه بعد از کامنت: ادیت به «پاک نکن خر🫤» — typing تا همین‌جا روشن می‌ماند."""
+    """۰.۵ تا ۱.۵ ثانیه بعد از کامنت «خدای»: ادیت به «خدایا» — typing تا همین‌جا روشن می‌ماند."""
     try:
-        delay = random.uniform(1, 3)
+        delay = random.uniform(0.5, 1.5)
         print(f"[EDIT SCHEDULED] {chat_id}/{comment_id} in {delay:.2f}s", flush=True)
         await asyncio.sleep(delay)
-        edit_text = random.choice(EDIT_TEXTS)
+        edit_text = EDIT_TEXT
         try:
             await app.edit_message_text(chat_id, comment_id, edit_text)
             print(f"[COMMENT EDITED] {chat_id}/{comment_id} -> {edit_text!r}", flush=True)
@@ -411,14 +470,14 @@ async def edit_comment_after_delay(chat_id: int, comment_id: int):
 
 
 async def send_comment(chat_id: int, root_message_id: int):
-    """کلمه‌ی دوحرفی رندوم روی ریشه (پوزیشن ۲-۸ را واچر تعیین کرده) → typing تا پایان ادیت
-    → ادیت به «پاک نکن خر🫤» بعد از ۱-۳ ثانیه."""
+    """«خدای» روی ریشه (پوزیشن ۱۵-۲۵ را واچر تعیین کرده) → typing تا پایان ادیت
+    → ادیت به «خدایا» بعد از ۰.۵-۱.۵ ثانیه."""
     global last_post_detected
     start_typing(chat_id)
     try:
         # هویت دقیقاً قبل از کامنت به حالت هدف برمی‌گردد (حتی اگر دستی عوض شده باشد)
         await apply_profile_amirali()
-        comment_text = random.choice(TWO_LETTER_WORDS)
+        comment_text = COMMENT_TEXT
         peer, _ = await get_channel_peers(chat_id)
         print(f"[COMMENT ATTEMPT] chat={chat_id} root={root_message_id} text={comment_text!r}", flush=True)
         result = await app.invoke(
@@ -451,7 +510,7 @@ async def send_comment(chat_id: int, root_message_id: int):
             result = await app.invoke(
                 raw.functions.messages.SendMessage(
                     peer=peer,
-                    message=random.choice(TWO_LETTER_WORDS),
+                    message=COMMENT_TEXT,
                     random_id=secrets.randbits(63),
                     reply_to_msg_id=root_message_id,
                     no_webpage=True,
@@ -491,6 +550,12 @@ def ensure_decision(root_key, source=""):
     decided_roots.add(root_key)
     # هویت همیشه (درخواست کاربر: چه کامنت گذاشت چه نگذاشت)
     asyncio.create_task(apply_profile_amirali())
+    global _root_index
+    _root_index += 1
+    if COMMENT_EVERY_N > 1 and (_root_index - 1) % COMMENT_EVERY_N != 0:
+        declined_roots.add(root_key)
+        print(f"[COMMENT DECIDED NO (every-{COMMENT_EVERY_N}th)] {root_key} idx={_root_index} via={source}", flush=True)
+        return False
     if random.random() > COMMENT_CHANCE:
         declined_roots.add(root_key)
         print(f"[COMMENT DECIDED NO (chance)] {root_key} chance={COMMENT_CHANCE} via={source}", flush=True)
