@@ -32,7 +32,7 @@ jobs:
           PYTHONUNBUFFERED: "1"
           admin_username: ${{ secrets.admin_username }}
           MAIN_SOURCE_CHANNEL: "-1002918683682"
-          MAIN_GROUP_ID: "-1003914365874"
+          MAIN_GROUP_ID: "-1004346491850"
           COMMENT_CHANCE: "1.0"
           COMMENT_EVERY_N: "2"
           MAX_COMMENTS_PER_HOUR: "30"
