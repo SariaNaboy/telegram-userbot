@@ -63,9 +63,9 @@ VALID_OWN_TEXTS = {COMMENT_TEXT, EDIT_TEXT}  # مچ = بماند، نمچ = حذ
 
 
 def is_valid_own_text(text: str) -> bool:
-    # کامنت‌های حاوی «پروفایل» (کامنت‌های دستی کاربر) هرگز پاک نمی‌شوند
+    # کامنت‌های حاوی «پروفایل» (دستی یا هرکی) با آمدن پست جدید پاک می‌شوند
     if "پروفایل" in text:
-        return True
+        return False
     if text in VALID_OWN_TEXTS:
         return True
     # کلمات ۲-۳ حرفی خالص فارسی (کامنت‌های رندوم / ریپلی‌های رندوم) دست نمی‌خورند
